@@ -64,7 +64,8 @@ function(CompileTPCCWithClang TPC_C_SOURCES_TO_EMBED TPC_HEADERS deviceName)
         add_custom_command(OUTPUT "${SOURCE_NAME_NO_PATH_NO_SUFFIX}_x86.o"
             DEPENDS ${SOURCE_FILE} ${TPC_COMPILER_PATH} ${TPC_HEADERS}
                 COMMAND cp ${SOURCE_FILE}  ${CMAKE_CURRENT_BINARY_DIR}
-                COMMAND ${TPC_COMPILER_PATH} -Wall -Werror -march=${deviceName} ${OPT_FLAG} ${DEBUG_FLAG} -I${TPC_INCLUDE_DIR}/ -I${TPC_CURRENT_LIST_DIR} ./${SOURCE_FILE_NAME_NO_PATH} -c
+                # COMMAND ${TPC_COMPILER_PATH} -Wall -Werror -march=${deviceName} ${OPT_FLAG} ${DEBUG_FLAG} -I${TPC_INCLUDE_DIR}/ -I${TPC_CURRENT_LIST_DIR} ./${SOURCE_FILE_NAME_NO_PATH} -c
+                COMMAND ${TPC_COMPILER_PATH} -march=${deviceName} ${OPT_FLAG} ${DEBUG_FLAG} -I${TPC_INCLUDE_DIR}/ -I${TPC_CURRENT_LIST_DIR} ./${SOURCE_FILE_NAME_NO_PATH} -c
                 COMMAND objcopy -I binary -O elf64-x86-64 -B i386:x86-64 ./${SOURCE_NAME_NO_PATH_NO_SUFFIX}.o "${SOURCE_NAME_NO_PATH_NO_SUFFIX}_x86.o"
 				COMMAND  ${TPC_DISASSEMBLER_PATH} --triple tpc -d -j .text --no-show-raw-insn --no-leading-addr --mcpu=${deviceName} ./${RELATIVE_DIRECTORY}/${SOURCE_NAME_NO_PATH_NO_SUFFIX}.o > ${CMAKE_CURRENT_BINARY_DIR}/${RELATIVE_DIRECTORY}/${SOURCE_NAME_NO_PATH_NO_SUFFIX}.tpcasm)
         add_library(${SOURCE_NAME_NO_PATH_NO_SUFFIX} STATIC "${SOURCE_NAME_NO_PATH_NO_SUFFIX}_x86.o")

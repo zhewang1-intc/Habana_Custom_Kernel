@@ -212,7 +212,13 @@ public:
         int num = 0;
         for (int i = 0 ; i < m_element_count; i++)
         {
-            m_pdata[i] = num;
+            // m_pdata[i] = num;
+            if(modulo==0){
+            m_pdata[i] = i;
+            }
+            else{
+            m_pdata[i] = i*0.1;
+            }
             num += 1;
             if (num >= modulo)
             {

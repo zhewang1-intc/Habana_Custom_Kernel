@@ -37,6 +37,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVE
 #include "add_f32_gaudi2.hpp"
 #include "relu_all_gaudi2.hpp"
 #include "user_lut_gaudi2.hpp"
+#include "decode_fused_sdpa.hpp"
 
 #include "entry_points.hpp"
 #include <stdio.h>
@@ -141,6 +142,8 @@ tpc_lib_api::GlueCodeReturn GetKernelGuids( _IN_    tpc_lib_api::DeviceId       
            ReluBwdBF16g2Instance.GetKernelName(guids[GAUDI2_KERNEL_RELU_BWD_BF16].name, ReluAllGaudi2::relu_bwd_bf16);
            UserLutGaudi2 userLutInstance;
            userLutInstance.GetKernelName(guids[GAUDI2_KERNEL_USER_LUT].name);
+           DecodeFusedSdpaGaudi2 DecodeFusedSdpaInstance;
+           DecodeFusedSdpaInstance.GetKernelName(guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA].name);
         }
 
         if (kernelCount != nullptr)
@@ -439,6 +442,13 @@ InstantiateTpcKernel(_IN_  tpc_lib_api::HabanaKernelParams* params,
     if (strcmp(params->guid.name, kernelName) == 0)
     {
         return userLutInstance.GetGcDefinitions(params,instance);
+    }
+
+    DecodeFusedSdpaGaudi2 DecodeFusedSdpaInstance;
+    DecodeFusedSdpaInstance.GetKernelName(kernelName);
+    if (strcmp(params->guid.name, kernelName) == 0)
+    {
+        return DecodeFusedSdpaInstance.GetGcDefinitions(params,instance);
     }
 
     return tpc_lib_api::GLUE_NODE_NOT_FOUND;

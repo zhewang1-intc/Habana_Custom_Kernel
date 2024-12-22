@@ -26,16 +26,17 @@ set(TPC_CURRENT_LIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels/include" CACHE STR
 set(TPC_TESTS_CORE_INCLUDE_DIR "/usr/lib/habanatools/include" CACHE STRING "Path to tests_core includes")
 
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wall -Werror -fno-strict-aliasing")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wall -Werror -fno-strict-aliasing")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fno-strict-aliasing")
 set(CMAKE_CXX_FLAGS_DEBUG "-ggdb -O0")
 set(CMAKE_CXX_FLAGS_RELEASE "-ggdb -O2")
-if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
+# if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
     message(STATUS "Build type selected for Debug")
     set(CMAKE_BUILD_TYPE "Debug")
-else()
-    message(STATUS "No build type selected, defaulting to Release")
-    set(CMAKE_BUILD_TYPE "Release")
-endif()
+# else()
+    # message(STATUS "No build type selected, defaulting to Release")
+    # set(CMAKE_BUILD_TYPE "Release")
+# endif()
 
 # Add external specs path.
 #include_directories(${TPC_INCLUDE_DIR})

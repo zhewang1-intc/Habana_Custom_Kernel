@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "relu6_fwd.h": "c",
+        "add_f32.h": "c",
+        "decode_fused_sdpa_fwd.h": "c"
+    }
+}

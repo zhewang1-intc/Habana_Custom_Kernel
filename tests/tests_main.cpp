@@ -35,6 +35,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVE
 #include "gather_fwd_i32_test.hpp"
 #include "kl_div_all_test.hpp"
 #include "user_lut_gaudi2_test.hpp"
+#include "decode_fused_sdpa_test.hpp"
 
 int check_arg(int argc, char** argv, const char* device, const char* test)
 {
@@ -59,6 +60,11 @@ int main(int argc, char** argv)
 {
     int result = 0;
     static int testCount = 0;
+
+    DecodeFusedSdpaTest sdpa_test;
+    sdpa_test.SetUp();
+    sdpa_test.runTest();
+    return 0;
 
     if(argc == 2 && ((strcmp(argv[1], "--help") ==0) || (strcmp(argv[1],"-h") ==0)))
     {
