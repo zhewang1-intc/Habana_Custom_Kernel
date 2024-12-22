@@ -34,13 +34,17 @@ void DecodeFusedSdpaTest::deocde_fused_sdpa_ref(
     int Q_coords[3] = {0};
     int K_coords[3] = {0};
     int QK_coords[3] = {0};
+    int V_coords[3] = {0};
+    int Out_coords[3] = {0};
     float QK_max = -9999999.f;
     for (int cur_q_head = 0; cur_q_head < q_head; cur_q_head++)
     {
         float exp_sum = 0.f;
         Q_coords[2] = cur_q_head;
         K_coords[2] = cur_q_head / shared_kv_head;
+        V_coords[2] = cur_q_head / shared_kv_head;
         QK_coords[2] = cur_q_head;
+        Out_coords[2] = cur_q_head;
         for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
         {
             QK_coords[0] = cur_kv_seq;
@@ -50,6 +54,8 @@ void DecodeFusedSdpaTest::deocde_fused_sdpa_ref(
         {
             Q_coords[0] = cur_dim;
             K_coords[1] = cur_dim;
+            Out_coords[0] = cur_dim;
+            Out.SetElement(Out_coords, 0.f);
             for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
             {
                 K_coords[0] = cur_kv_seq;
@@ -74,6 +80,17 @@ void DecodeFusedSdpaTest::deocde_fused_sdpa_ref(
             QK_coords[0] = cur_kv_seq;
             QK.SetElement(QK_coords, QK.ElementAt(QK_coords) / exp_sum);
         }
+        for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
+        {
+            QK_coords[0] = cur_kv_seq;
+            V_coords[1] = cur_kv_seq;
+            for (int cur_dim = 0; cur_dim < head_dim; cur_dim++)
+            {
+                V_coords[0] = cur_dim;
+                Out_coords[0] = cur_dim;
+                Out.SetElement(Out_coords, Out.ElementAt(Out_coords) + QK.ElementAt(QK_coords) * V.ElementAt(V_coords));
+            }
+        }
     }
 }
 
@@ -82,10 +99,10 @@ int DecodeFusedSdpaTest::runTest()
 
     /**********************Test for cast bf16 to f32************************/
     // Initalize input size
-    const int q_head = 8;
+    const int q_head = 32;
     const int q_seq = 1;
-    const int head_dim = 8;
-    const int kv_head = 1;
+    const int head_dim = 128;
+    const int kv_head = 4;
     const int kv_seq = 128;
 
     // Initalize inputs
@@ -93,29 +110,18 @@ int DecodeFusedSdpaTest::runTest()
     uint64_t tmp_init[] = {kv_seq, q_seq, q_head};
     uint64_t k_init[] = {kv_seq, head_dim, kv_head};
     uint64_t v_init[] = {head_dim, kv_seq, kv_head};
-    // float16_3DTensor Q(q_init);
-    // float16_3DTensor K(kv_init);
-    // float16_3DTensor QK(tmp_init);
-    // float16_3DTensor V(kv_init);
-    // float16_3DTensor Out(q_init);
     float_3DTensor Q(q_init);
     float_3DTensor K(k_init);
     float_3DTensor QK(tmp_init);
     float_3DTensor QK_ref(tmp_init);
     float_3DTensor V(v_init);
     float_3DTensor Out(q_init);
+    float_3DTensor Out_ref(q_init);
     Q.FillWithData(0);
     K.FillWithData(1);
 
-    // IndexSpace indexSpace = {{0}};
-
-    // Define input and output scale for quantization
-    // Castf16toi16Gaudi2::Castf16toi16Param def;
-    // def.roundingMode = RND_TO_NINF;
-    // def.roundingMode = RND_TO_NE;
-
     // execute reference implementation of the kernel.
-    this->deocde_fused_sdpa_ref(Q, K, QK_ref, V, Out);
+    this->deocde_fused_sdpa_ref(Q, K, QK_ref, V, Out_ref);
 
     // generate input for query call
     m_in_defs.deviceId = tpc_lib_api::DEVICE_ID_GAUDI2;
@@ -161,11 +167,11 @@ int DecodeFusedSdpaTest::runTest()
     // execute a simulation of the kernel using TPC simulator,
     TestBase::RunSimulation(vec, m_in_defs, m_out_defs);
     ReleaseKernelNames(guids, kernelCount);
-    for (int element = 0; element < QK_ref.ElementCount(); element++)
+    for (int element = 0; element < Out_ref.ElementCount(); element++)
     {
-        if (abs(QK.Data()[element] - QK_ref.Data()[element]) > 10e-4)
+        if (abs(Out.Data()[element] - Out_ref.Data()[element]) > 10e-4)
         {
-            std::cout << "err idx:" << element << ", value: " << QK.Data()[element] << " vs " << QK_ref.Data()[element] << std::endl;
+            std::cout << "err idx:" << element << ", value: " << Out.Data()[element] << " vs " << Out_ref.Data()[element] << std::endl;
             std::cout << "decode sdpa test failed!!" << std::endl;
             return -1;
         }

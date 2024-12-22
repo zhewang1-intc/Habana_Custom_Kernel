@@ -24,7 +24,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "kernel_config.h"
 #pragma tpc_printf(enable)
 
-#define process_64_kv_reg_num 1
+#define process_64_kv_reg_num 2
+#define NO_SLM_SOFTMAX
 
 #define PRINT_REG_VALUE(NAME, REG)                                             \
   printf(NAME);                                                                \
@@ -47,14 +48,14 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
   int5 Q_coords = {0};
   int5 K_coords = {0};
   int5 QK_coords = {0};
-  //     int5 V_coords = {0};
-  //     int5 Out_coords = {0};
+  int5 V_coords = {0};
+  int5 Out_coords = {0};
 
   float64 sqrt_dk = 2.f; // todo: make it as param.
 
-  float64 broadcast_Q_reg;
-  float64 K_reg[process_64_kv_reg_num];
-  float64 QK_acc[process_64_kv_reg_num];
+  float64 broadcast_reg;
+  float64 KV_reg[process_64_kv_reg_num];
+  float64 acc_reg[process_64_kv_reg_num];
   float64 QK_max = -9999999999.f;
   float64 QK_exp_sum;
   float64 tmp = 1.f;
@@ -63,73 +64,109 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
        cur_q_head++) {
     Q_coords[2] = cur_q_head;
     K_coords[2] = cur_q_head / shared_kv_head;
+    V_coords[2] = cur_q_head / shared_kv_head;
     QK_coords[2] = cur_q_head;
-    printf("q_head: %d\n", cur_q_head);
-    printf("kv_head: %d\n", K_coords[2]);
+    Out_coords[2] = cur_q_head;
     // gemv
     for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
          cur_kv_seq += depthStep * process_64_kv_reg_num) {
+#pragma loop_taken
       for (int i = 0; i < process_64_kv_reg_num; i++)
-        QK_acc[i] = 0.f;
+        acc_reg[i] = 0.f;
+      // slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = 0.f;
       for (int broadcast_Q_dim = 0; broadcast_Q_dim < head_dim;
            broadcast_Q_dim++) {
-        // printf("cur_head_dim: %d\n", broadcast_Q_dim);
         Q_coords[0] = broadcast_Q_dim;
         K_coords[1] = broadcast_Q_dim;
         __global__ float *p_Q = gen_addr(Q_coords, Q);
-        broadcast_Q_reg = v_f32_ld_g(p_Q);
-        // PRINT_REG_VALUE("broadcast_Q_reg\n", broadcast_Q_reg);
+        broadcast_reg = v_f32_ld_g(p_Q);
+#pragma loop_taken
         for (int i = 0; i < process_64_kv_reg_num; i++) {
           K_coords[0] = cur_kv_seq + i * 64;
-          // printf("cur_kv_seq: %d\n", K_coords[0]);
-          K_reg[i] = v_f32_ld_tnsr_b(K_coords, K);
-          // PRINT_REG_VALUE("K_reg\n", K_reg[i]);
-          QK_acc[i] = v_f32_mac_b(K_reg[i], broadcast_Q_reg, QK_acc[i]);
-          // PRINT_REG_VALUE("QK_acc_reg\n", QK_acc[i]);
+          KV_reg[i] = v_f32_ld_tnsr_b(K_coords, K);
+          acc_reg[i] = v_f32_mac_b(KV_reg[i], broadcast_reg, acc_reg[i]);
+          // slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] =
+          // v_f32_mac_b(
+          //     KV_reg[i], broadcast_reg,
+          //     slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)]);
         }
       }
+#pragma loop_taken
       for (int i = 0; i < process_64_kv_reg_num; i++) {
         QK_coords[0] = cur_kv_seq + i * 64;
         v_f32_st_tnsr(
             QK_coords, QK,
-            QK_acc[i]); // TODO(zhe): move to slm when kv_seq is small.
-        // slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = QK_acc[i];
-        QK_max = v_f32_max_b(QK_acc[i], QK_max);
+            // slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)]);
+            acc_reg[i]); // TODO(zhe): move to slm when kv_seq is small.
+        QK_max = v_f32_max_b(acc_reg[i], QK_max);
+        // QK_max = v_f32_max_b(
+        // slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)], QK_max);
       }
     }
     // softmax
     QK_max = v_f32_reduce_max(QK_max);
-    printf("Q_max: %f\n", QK_max[0]);
     QK_exp_sum = 0.f;
     for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
          cur_kv_seq += depthStep * process_64_kv_reg_num) {
+#pragma loop_taken
       for (int i = 0; i < process_64_kv_reg_num; i++) {
+#ifdef NO_SLM_SOFTMAX
         QK_coords[0] = cur_kv_seq + i * 64;
-        QK_acc[i] = v_f32_ld_tnsr_b(QK_coords, QK);
-        // QK_acc[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
-        // PRINT_REG_VALUE("QK\n", QK_acc[i]);
-        QK_acc[i] = v_f32_sub_b(QK_acc[i], QK_max);
-        // PRINT_REG_VALUE("sub exp\n", QK_acc[i]);
-        QK_acc[i] = v_exp_f32(QK_acc[i]);
-        v_f32_st_tnsr(QK_coords, QK, QK_acc[i]);
-        // slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = QK_acc[i];
-        QK_exp_sum = v_f32_add_b(QK_exp_sum, QK_acc[i]);
+        acc_reg[i] = v_f32_ld_tnsr_b(QK_coords, QK);
+        acc_reg[i] = v_f32_sub_b(acc_reg[i], QK_max);
+        acc_reg[i] = v_exp_f32(acc_reg[i]);
+        v_f32_st_tnsr(QK_coords, QK, acc_reg[i]);
+        QK_exp_sum = v_f32_add_b(QK_exp_sum, acc_reg[i]);
+#else
+        slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = v_f32_sub_b(
+            slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)], QK_max);
+        slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] =
+            v_exp_f32(slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)]);
+        QK_exp_sum = v_f32_add_b(
+            QK_exp_sum,
+            slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)]);
+#endif
       }
     }
     QK_exp_sum = v_f32_reduce_add(QK_exp_sum);
-    // PRINT_REG_VALUE("exp_sum\n", QK_exp_sum);
     QK_exp_sum = v_div_f32(tmp, QK_exp_sum);
-    // PRINT_REG_VALUE("div_exp_sum\n", QK_exp_sum);
     for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
          cur_kv_seq += depthStep * process_64_kv_reg_num) {
+#pragma loop_taken
       for (int i = 0; i < process_64_kv_reg_num; i++) {
         QK_coords[0] = cur_kv_seq + i * 64;
-        QK_acc[i] = v_f32_ld_tnsr_b(QK_coords, QK);
-        // QK_acc[i] =
-            // v_f32_mul_b(slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)],
-                        // QK_exp_sum);
-        QK_acc[i] = v_f32_mul_b(QK_acc[i], QK_exp_sum);
-        v_f32_st_tnsr(QK_coords, QK, QK_acc[i]);
+        acc_reg[i] = v_f32_ld_tnsr_b(QK_coords, QK);
+        // slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] =
+        // v_f32_mul_b(slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)],
+        // QK_exp_sum);
+        acc_reg[i] = v_f32_mul_b(acc_reg[i], QK_exp_sum);
+        v_f32_st_tnsr(QK_coords, QK, acc_reg[i]);
+        // v_f32_st_tnsr(QK_coords, QK,
+        // slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)]);
+      }
+    }
+    // QK * V gemv
+    for (int cur_dim = 0; cur_dim < head_dim;
+         cur_dim += depthStep * process_64_kv_reg_num) {
+      V_coords[0] = cur_dim;
+      Out_coords[0] = cur_dim;
+#pragma loop_taken
+      for (int i = 0; i < process_64_kv_reg_num; i++)
+        acc_reg[i] = 0.f;
+      for (int broadcast_QK_dim = 0; broadcast_QK_dim < kv_seq_len;
+           broadcast_QK_dim++) {
+        QK_coords[0] = broadcast_QK_dim;
+        V_coords[1] = broadcast_QK_dim;
+        __global__ float *p_QK = gen_addr(QK_coords, QK);
+        broadcast_reg = v_f32_ld_g(p_QK);
+#pragma loop_taken
+        for (int i = 0; i < process_64_kv_reg_num; i++) {
+          KV_reg[i] = v_f32_ld_tnsr_b(V_coords, V);
+          acc_reg[i] = v_f32_mac_b(KV_reg[i], broadcast_reg, acc_reg[i]);
+        }
+#pragma loop_taken
+        for (int i = 0; i < process_64_kv_reg_num; i++)
+          v_f32_st_tnsr(Out_coords, Out, acc_reg[i]);
       }
     }
   }
