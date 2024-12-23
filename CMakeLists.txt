@@ -27,7 +27,7 @@ set(TPC_TESTS_CORE_INCLUDE_DIR "/usr/lib/habanatools/include" CACHE STRING "Path
 
 
 # set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wall -Werror -fno-strict-aliasing")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fno-strict-aliasing")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -fno-strict-aliasing")
 set(CMAKE_CXX_FLAGS_DEBUG "-ggdb -O0")
 set(CMAKE_CXX_FLAGS_RELEASE "-ggdb -O2")
 # if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")

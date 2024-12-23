@@ -141,6 +141,10 @@ public:
         return m_pdata[offset];
     }
 
+    float Bf16ElementAtCvtF32(int coords[DIM]) const{
+        return bf16ToFloat(ElementAt(coords));
+    }
+
     void SetElement(int coords[DIM], T value)
     {
          int offset = 0;
