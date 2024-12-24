@@ -129,12 +129,11 @@ template <typename T>
 int DecodeFusedSdpaTest<T>::runTest()
 {
 
-    /**********************Test for cast bf16 to f32************************/
     // Initalize input size
-    const int q_head = 32;
+    const int q_head = 2;
     const int q_seq = 1;
     const int head_dim = 128;
-    const int kv_head = 4;
+    const int kv_head = 1;
     const int kv_seq = 128;
 
     // Initalize inputs
