@@ -177,7 +177,10 @@ int DecodeFusedSdpaTest<T>::runTest()
         return -1;
     }
 
-    strcpy(m_in_defs.guid.name, guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA].name);
+    if constexpr (std::is_same_v<T, float>)
+        strcpy(m_in_defs.guid.name, guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA_F32].name);
+    else
+        strcpy(m_in_defs.guid.name, guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA_BF16].name);
     result = InstantiateTpcKernel(&m_in_defs, &m_out_defs);
     if (result != tpc_lib_api::GLUE_SUCCESS)
     {

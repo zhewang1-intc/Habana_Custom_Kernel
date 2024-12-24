@@ -61,10 +61,12 @@ int main(int argc, char** argv)
     int result = 0;
     static int testCount = 0;
 
-    DecodeFusedSdpaTest<bfloat16> sdpa_test;
-    // DecodeFusedSdpaTest<float> sdpa_test;
-    sdpa_test.SetUp();
-    sdpa_test.runTest();
+    DecodeFusedSdpaTest<bfloat16> sdpa_test_bf16;
+    sdpa_test_bf16.SetUp();
+    sdpa_test_bf16.runTest();
+    DecodeFusedSdpaTest<float> sdpa_test_f32;
+    sdpa_test_f32.SetUp();
+    sdpa_test_f32.runTest();
     return 0;
 
     if(argc == 2 && ((strcmp(argv[1], "--help") ==0) || (strcmp(argv[1],"-h") ==0)))

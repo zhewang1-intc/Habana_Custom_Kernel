@@ -13,35 +13,5 @@ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCL
 OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************/
-
-#ifndef _DECODE_FUSED_SDPA_ALL_GAUDI2_HPP
-#define _DECODE_FUSED_SDPA_ALL_GAUDI2_HPP
-
-#include "gc_interface.h"
-#include "tpc_kernel_lib_interface.h"
-
-class DecodeFusedSdpaGaudi2
-{
-public:
-    typedef enum _Decode_Sdpa_mode_t
-    {
-        decode_fused_sdpa_f32_fwd,
-        decode_fused_sdpa_bf16_fwd,
-    } Decode_Sdpa_mode;
-    DecodeFusedSdpaGaudi2(Decode_Sdpa_mode mode_ = decode_fused_sdpa_bf16_fwd) { sdpa_mode = mode_; }
-    virtual ~DecodeFusedSdpaGaudi2() {}
-
-    virtual tpc_lib_api::GlueCodeReturn
-    GetGcDefinitions(tpc_lib_api::HabanaKernelParams *in_defs,
-                     tpc_lib_api::HabanaKernelInstantiation *out_defs);
-
-    virtual tpc_lib_api::GlueCodeReturn GetKernelName(
-        char kernelName[tpc_lib_api::MAX_NODE_NAME], Decode_Sdpa_mode mode);
-
-private:
-    Decode_Sdpa_mode sdpa_mode;
-    DecodeFusedSdpaGaudi2(const DecodeFusedSdpaGaudi2 &other) = delete;
-    DecodeFusedSdpaGaudi2 &operator=(const DecodeFusedSdpaGaudi2 &other) = delete;
-};
-
-#endif
+#define FLOAT32
+#include "decode_fused_sdpa_fwd.h"

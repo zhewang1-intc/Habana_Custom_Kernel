@@ -142,8 +142,10 @@ tpc_lib_api::GlueCodeReturn GetKernelGuids( _IN_    tpc_lib_api::DeviceId       
            ReluBwdBF16g2Instance.GetKernelName(guids[GAUDI2_KERNEL_RELU_BWD_BF16].name, ReluAllGaudi2::relu_bwd_bf16);
            UserLutGaudi2 userLutInstance;
            userLutInstance.GetKernelName(guids[GAUDI2_KERNEL_USER_LUT].name);
-           DecodeFusedSdpaGaudi2 DecodeFusedSdpaInstance;
-           DecodeFusedSdpaInstance.GetKernelName(guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA].name);
+           DecodeFusedSdpaGaudi2 DecodeFusedSdpaF32FwdInstance(DecodeFusedSdpaGaudi2::decode_fused_sdpa_f32_fwd);
+           DecodeFusedSdpaF32FwdInstance.GetKernelName(guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA_F32].name,DecodeFusedSdpaGaudi2::decode_fused_sdpa_f32_fwd);
+           DecodeFusedSdpaGaudi2 DecodeFusedSdpaBf16FwdInstance(DecodeFusedSdpaGaudi2::decode_fused_sdpa_bf16_fwd);
+           DecodeFusedSdpaBf16FwdInstance.GetKernelName(guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA_BF16].name,DecodeFusedSdpaGaudi2::decode_fused_sdpa_bf16_fwd);
         }
 
         if (kernelCount != nullptr)
@@ -444,11 +446,18 @@ InstantiateTpcKernel(_IN_  tpc_lib_api::HabanaKernelParams* params,
         return userLutInstance.GetGcDefinitions(params,instance);
     }
 
-    DecodeFusedSdpaGaudi2 DecodeFusedSdpaInstance;
-    DecodeFusedSdpaInstance.GetKernelName(kernelName);
+    DecodeFusedSdpaGaudi2 DecodeFusedSdpaF32FwdInstance(DecodeFusedSdpaGaudi2::decode_fused_sdpa_f32_fwd);
+    DecodeFusedSdpaF32FwdInstance.GetKernelName(kernelName,DecodeFusedSdpaGaudi2::decode_fused_sdpa_f32_fwd);
     if (strcmp(params->guid.name, kernelName) == 0)
     {
-        return DecodeFusedSdpaInstance.GetGcDefinitions(params,instance);
+        return DecodeFusedSdpaF32FwdInstance.GetGcDefinitions(params,instance);
+    }
+
+    DecodeFusedSdpaGaudi2 DecodeFusedSdpaBf16FwdInstance(DecodeFusedSdpaGaudi2::decode_fused_sdpa_bf16_fwd);
+    DecodeFusedSdpaBf16FwdInstance.GetKernelName(kernelName,DecodeFusedSdpaGaudi2::decode_fused_sdpa_bf16_fwd);
+    if (strcmp(params->guid.name, kernelName) == 0)
+    {
+        return DecodeFusedSdpaBf16FwdInstance.GetGcDefinitions(params,instance);
     }
 
     return tpc_lib_api::GLUE_NODE_NOT_FOUND;

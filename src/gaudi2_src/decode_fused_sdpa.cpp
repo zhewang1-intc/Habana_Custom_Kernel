@@ -19,13 +19,20 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVE
 #include <iostream>
 #include "decode_fused_sdpa.hpp"
 
-extern unsigned char _binary___decode_fused_sdpa_fwd_o_start;
-extern unsigned char _binary___decode_fused_sdpa_fwd_o_end;
+extern unsigned char _binary___decode_fused_sdpa_f32_fwd_o_start;
+extern unsigned char _binary___decode_fused_sdpa_f32_fwd_o_end;
+extern unsigned char _binary___decode_fused_sdpa_bf16_fwd_o_start;
+extern unsigned char _binary___decode_fused_sdpa_bf16_fwd_o_end;
 
 tpc_lib_api::GlueCodeReturn DecodeFusedSdpaGaudi2::GetKernelName(
-    char kernelName[tpc_lib_api::MAX_NODE_NAME])
+    char kernelName[tpc_lib_api::MAX_NODE_NAME], Decode_Sdpa_mode mode)
 {
-    strcpy(kernelName, "decode_fused_sdpa_fwd");
+    if (mode == decode_fused_sdpa_f32_fwd)
+        strcpy(kernelName, "decode_fused_sdpa_f32_fwd");
+    else if (mode == decode_fused_sdpa_bf16_fwd)
+        strcpy(kernelName, "decode_fused_sdpa_bf16_fwd");
+    else
+        return tpc_lib_api::GLUE_NODE_NOT_FOUND;
     return tpc_lib_api::GLUE_SUCCESS;
 }
 
@@ -71,7 +78,7 @@ tpc_lib_api::GlueCodeReturn DecodeFusedSdpaGaudi2::GetGcDefinitions(
      *    Stage II -  Define index space geometry. In this example the index space matches
      *    the dimensions of the output tensor, up to dim 0.
      **************************************************************************************/
-    int elementsInVec = 128; // bf16 decode fused sdpa
+    int elementsInVec = sdpa_mode == decode_fused_sdpa_bf16_fwd ? 128 : 64;
     uint64_t outputSizes[gcapi::MAX_TENSOR_DIM] = {0};
     memcpy(outputSizes, in_defs->inputTensors[0].geometry.maxSizes, sizeof(outputSizes));
 
@@ -125,15 +132,28 @@ tpc_lib_api::GlueCodeReturn DecodeFusedSdpaGaudi2::GetGcDefinitions(
     /*************************************************************************************
      *    Stage V -  Load ISA into the descriptor.
      **************************************************************************************/
-    unsigned IsaSize = (&_binary___decode_fused_sdpa_fwd_o_end - &_binary___decode_fused_sdpa_fwd_o_start);
+    unsigned IsaSize = (&_binary___decode_fused_sdpa_f32_fwd_o_end - &_binary___decode_fused_sdpa_f32_fwd_o_start);
+    unsigned char *binary_kernel;
+    switch (sdpa_mode)
+    {
+    case decode_fused_sdpa_f32_fwd:
+        IsaSize = (&_binary___decode_fused_sdpa_f32_fwd_o_end - &_binary___decode_fused_sdpa_f32_fwd_o_start);
+        binary_kernel = &_binary___decode_fused_sdpa_f32_fwd_o_start;
+        break;
+    case decode_fused_sdpa_bf16_fwd:
+        IsaSize = (&_binary___decode_fused_sdpa_bf16_fwd_o_end - &_binary___decode_fused_sdpa_bf16_fwd_o_start);
+        binary_kernel = &_binary___decode_fused_sdpa_bf16_fwd_o_start;
+        break;
+    default:
+        break;
+    }
     unsigned givenBinarySize = out_defs->kernel.elfSize;
     out_defs->kernel.elfSize = IsaSize;
-
     if (givenBinarySize >= IsaSize)
     {
         // copy binary out
         memcpy(out_defs->kernel.kernelElf,
-               &_binary___decode_fused_sdpa_fwd_o_start,
+               binary_kernel,
                IsaSize);
     }
     else
