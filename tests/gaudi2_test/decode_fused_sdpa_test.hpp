@@ -63,9 +63,9 @@ void DecodeFusedSdpaTest<T>::deocde_fused_sdpa_ref(
     int V_coords[3] = {0};
     int Out_coords[3] = {0};
     float QK_max = -9999999.f;
-    bool is_bf16 = false;
+    bool is_bf16 = true;
     if constexpr (std::is_same<T, float>::value)
-        is_bf16 = true;
+        is_bf16 = false;
     for (int cur_q_head = 0; cur_q_head < q_head; cur_q_head++)
     {
         float exp_sum = 0.f;
@@ -90,8 +90,7 @@ void DecodeFusedSdpaTest<T>::deocde_fused_sdpa_ref(
             {
                 K_coords[0] = cur_kv_seq;
                 QK_coords[0] = cur_kv_seq;
-
-                QK.SetElement(QK_coords, is_bf16 ? floatToBf16(QK.Bf16ElementAtCvtF32(QK_coords) + Q.Bf16ElementAtCvtF32(Q_coords) * K.Bf16ElementAtCvtF32(K_coords)) : Out.ElementAt(Out_coords) + QK.ElementAt(QK_coords) * V.ElementAt(V_coords));
+                QK.SetElement(QK_coords, is_bf16 ? floatToBf16(QK.Bf16ElementAtCvtF32(QK_coords) + Q.Bf16ElementAtCvtF32(Q_coords) * K.Bf16ElementAtCvtF32(K_coords)) : QK.ElementAt(QK_coords) + Q.ElementAt(Q_coords) * K.ElementAt(K_coords));
             }
         }
         for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
@@ -99,6 +98,7 @@ void DecodeFusedSdpaTest<T>::deocde_fused_sdpa_ref(
             QK_coords[0] = cur_kv_seq;
             QK_max = std::max(QK_max, is_bf16 ? bf16ToFloat(QK.ElementAt(QK_coords)) : QK.ElementAt(QK_coords));
         }
+        std::cout << "ref QK_max: " << QK_max << std::endl;
         for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
         {
             QK_coords[0] = cur_kv_seq;
@@ -198,11 +198,11 @@ int DecodeFusedSdpaTest<T>::runTest()
     // execute a simulation of the kernel using TPC simulator,
     TestBase::RunSimulation(vec, m_in_defs, m_out_defs);
     ReleaseKernelNames(guids, kernelCount);
-    for (int element = 0; element < Out_ref.ElementCount(); element++)
+    for (int element = 0; element < QK_ref.ElementCount(); element++)
     {
-        if (abs(Out.Data()[element] - Out_ref.Data()[element]) > 10e-4)
+        if (abs(QK.Data()[element] - QK_ref.Data()[element]) > 10e-4)
         {
-            std::cout << "err idx:" << element << ", value: " << Out.Data()[element] << " vs " << Out_ref.Data()[element] << std::endl;
+            std::cout << "err idx:" << element << ", value: " << QK.Data()[element] << " vs " << QK_ref.Data()[element] << std::endl;
             std::cout << "decode sdpa test failed!!" << std::endl;
             return -1;
         }

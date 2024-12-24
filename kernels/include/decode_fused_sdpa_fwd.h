@@ -24,18 +24,17 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "kernel_config.h"
 #pragma tpc_printf(enable)
 
-#define process_64_kv_reg_num 2
+#define broadcast_unroll 4
 #define NO_SLM_SOFTMAX
 
-#define PRINT_REG_VALUE(NAME, REG) \
-  printf(NAME);                    \
-  for (int i = 0; i < 64; i++)     \
-    printf("%f ", REG[i]);         \
+#define PRINT_REG_VALUE(NAME, REG)                                             \
+  printf(NAME);                                                                \
+  for (int i = 0; i < 64; i++)                                                 \
+    printf("%f ", REG[i]);                                                     \
   printf("\n");
 
 __local__ float64 slm_test[1024 * 16 / 4 / 64];
-void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out)
-{
+void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
   const int5 Q_head_start = get_index_space_offset();
   const int5 Q_head_end = get_index_space_size() + Q_head_start;
 
@@ -54,126 +53,147 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out)
 
   float64 sqrt_dk = 2.f; // todo: make it as param.
 
-  float64 broadcast_reg;
-  float64 KV_reg[process_64_kv_reg_num];
-  float64 acc_reg[process_64_kv_reg_num];
+  float64 broadcast_reg[broadcast_unroll];
+  float64 KV_reg[broadcast_unroll];
+  float64 acc_reg[broadcast_unroll];
   float64 QK_max = -9999999999.f;
   float64 QK_exp_sum;
   float64 tmp = 1.f;
 
   for (int cur_q_head = Q_head_start[0]; cur_q_head < Q_head_end[0];
-       cur_q_head++)
-  {
+       cur_q_head++) {
     Q_coords[2] = cur_q_head;
     K_coords[2] = cur_q_head / shared_kv_head;
     V_coords[2] = cur_q_head / shared_kv_head;
     QK_coords[2] = cur_q_head;
     Out_coords[2] = cur_q_head;
     // gemv
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
-         cur_kv_seq += depthStep * process_64_kv_reg_num)
-    {
+    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += depthStep) {
+      K_coords[0] = cur_kv_seq;
 #pragma loop_taken
-      for (int i = 0; i < process_64_kv_reg_num; i++)
+      for (int i = 0; i < broadcast_unroll; i++)
         acc_reg[i] = 0.f;
       for (int broadcast_Q_dim = 0; broadcast_Q_dim < head_dim;
-           broadcast_Q_dim++)
-      {
+           broadcast_Q_dim += broadcast_unroll) {
         Q_coords[0] = broadcast_Q_dim;
+        __global__ float *p_Q0 = gen_addr(Q_coords, Q);
+        Q_coords[0] += 1;
+        __global__ float *p_Q1 = gen_addr(Q_coords, Q);
+        Q_coords[0] += 1;
+        __global__ float *p_Q2 = gen_addr(Q_coords, Q);
+        Q_coords[0] += 1;
+        __global__ float *p_Q3 = gen_addr(Q_coords, Q);
+        broadcast_reg[0] = v_f32_ld_g(p_Q0);
+        broadcast_reg[1] = v_f32_ld_g(p_Q1);
+        broadcast_reg[2] = v_f32_ld_g(p_Q2);
+        broadcast_reg[3] = v_f32_ld_g(p_Q3);
         K_coords[1] = broadcast_Q_dim;
-        __global__ float *p_Q = gen_addr(Q_coords, Q);
-        broadcast_reg = v_f32_ld_g(p_Q);
-#pragma loop_taken
-        for (int i = 0; i < process_64_kv_reg_num; i++)
-        {
-          K_coords[0] = cur_kv_seq + i * 64;
-          KV_reg[i] = v_f32_ld_tnsr_b(K_coords, K);
-          acc_reg[i] = v_f32_mac_b(KV_reg[i], broadcast_reg, acc_reg[i]);
-        }
+        KV_reg[0] = v_f32_ld_tnsr_b(K_coords, K);
+        K_coords[1] += 1;
+        KV_reg[1] = v_f32_ld_tnsr_b(K_coords, K);
+        K_coords[1] += 1;
+        KV_reg[2] = v_f32_ld_tnsr_b(K_coords, K);
+        K_coords[1] += 1;
+        KV_reg[3] = v_f32_ld_tnsr_b(K_coords, K);
+        acc_reg[0] = v_f32_mac_b(KV_reg[0], broadcast_reg[0], acc_reg[0]);
+        acc_reg[1] = v_f32_mac_b(KV_reg[1], broadcast_reg[1], acc_reg[1]);
+        acc_reg[2] = v_f32_mac_b(KV_reg[2], broadcast_reg[2], acc_reg[2]);
+        acc_reg[3] = v_f32_mac_b(KV_reg[3], broadcast_reg[3], acc_reg[3]);
+        acc_reg[0] = v_f32_add_b(acc_reg[0], acc_reg[1]);
+        acc_reg[2] = v_f32_add_b(acc_reg[2], acc_reg[3]);
+        acc_reg[0] = v_f32_add_b(acc_reg[0], acc_reg[2]);
+
+        acc_reg[1] = 0.f;
+        acc_reg[2] = 0.f;
+        acc_reg[3] = 0.f;
       }
-#pragma loop_taken
-      for (int i = 0; i < process_64_kv_reg_num; i++)
-      {
-        QK_coords[0] = cur_kv_seq + i * 64;
-        QK_max = v_f32_max_b(acc_reg[i], QK_max);
+
+      QK_coords[0] = cur_kv_seq;
+      QK_max = v_f32_max_b(acc_reg[0], QK_max);
 #ifdef NO_SLM_SOFTMAX
-        v_f32_st_tnsr(
-            QK_coords, QK,
-            acc_reg[i]); // TODO(zhe): move to slm when kv_seq is small.
+      v_f32_st_tnsr(QK_coords, QK,
+                    acc_reg[0]); // TODO(zhe): move to slm when kv_seq is small.
 #else
-        slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = acc_reg[i];
+      slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = acc_reg[i];
 #endif
-      }
     }
     // softmax
     QK_max = v_f32_reduce_max(QK_max);
+    printf("QK_max %f\n", QK_max[0]);
     QK_exp_sum = 0.f;
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
-         cur_kv_seq += depthStep * process_64_kv_reg_num)
-    {
-#pragma loop_taken
-      for (int i = 0; i < process_64_kv_reg_num; i++)
-      {
+    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += depthStep) {
 #ifdef NO_SLM_SOFTMAX
-        QK_coords[0] = cur_kv_seq + i * 64;
-        acc_reg[i] = v_f32_ld_tnsr_b(QK_coords, QK);
+      QK_coords[0] = cur_kv_seq;
+      acc_reg[0] = v_f32_ld_tnsr_b(QK_coords, QK);
 #else
-        acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
+      acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
 #endif
-        acc_reg[i] = v_f32_sub_b(acc_reg[i], QK_max);
-        acc_reg[i] = v_exp_f32(acc_reg[i]);
+      acc_reg[0] = v_f32_sub_b(acc_reg[0], QK_max);
+      acc_reg[0] = v_exp_f32(acc_reg[0]);
 #ifdef NO_SLM_SOFTMAX
-        v_f32_st_tnsr(QK_coords, QK, acc_reg[i]);
+      v_f32_st_tnsr(QK_coords, QK, acc_reg[0]);
 #else
-        slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = acc_reg[i];
+      slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = acc_reg[i];
 #endif
-        QK_exp_sum = v_f32_add_b(QK_exp_sum, acc_reg[i]);
-      }
+      QK_exp_sum = v_f32_add_b(QK_exp_sum, acc_reg[0]);
     }
     QK_exp_sum = v_f32_reduce_add(QK_exp_sum);
     QK_exp_sum = v_div_f32(tmp, QK_exp_sum);
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
-         cur_kv_seq += depthStep * process_64_kv_reg_num)
-    {
-#pragma loop_taken
-      for (int i = 0; i < process_64_kv_reg_num; i++)
-      {
-        QK_coords[0] = cur_kv_seq + i * 64;
+    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += depthStep) {
+      QK_coords[0] = cur_kv_seq;
 #ifdef NO_SLM_SOFTMAX
-        acc_reg[i] = v_f32_ld_tnsr_b(QK_coords, QK);
+      acc_reg[0] = v_f32_ld_tnsr_b(QK_coords, QK);
 #else
-        acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
+      acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
 #endif
-        acc_reg[i] = v_f32_mul_b(acc_reg[i], QK_exp_sum);
-        v_f32_st_tnsr(QK_coords, QK, acc_reg[i]);
-      }
+      acc_reg[0] = v_f32_mul_b(acc_reg[0], QK_exp_sum);
+      v_f32_st_tnsr(QK_coords, QK, acc_reg[0]);
     }
     // QK * V gemv
-    for (int cur_dim = 0; cur_dim < head_dim;
-         cur_dim += depthStep * process_64_kv_reg_num)
-    {
+    for (int cur_dim = 0; cur_dim < head_dim; cur_dim += depthStep) {
       V_coords[0] = cur_dim;
       Out_coords[0] = cur_dim;
 #pragma loop_taken
-      for (int i = 0; i < process_64_kv_reg_num; i++)
+      for (int i = 0; i < broadcast_unroll; i++)
         acc_reg[i] = 0.f;
       for (int broadcast_QK_dim = 0; broadcast_QK_dim < kv_seq_len;
-           broadcast_QK_dim++)
-      {
+           broadcast_QK_dim += broadcast_unroll) {
         QK_coords[0] = broadcast_QK_dim;
+        __global__ float *p_QK0 = gen_addr(QK_coords, QK);
+        QK_coords[0] += 1;
+        __global__ float *p_QK1 = gen_addr(QK_coords, QK);
+        QK_coords[0] += 1;
+        __global__ float *p_QK2 = gen_addr(QK_coords, QK);
+        QK_coords[0] += 1;
+        __global__ float *p_QK3 = gen_addr(QK_coords, QK);
+        broadcast_reg[0] = v_f32_ld_g(p_QK0);
+        broadcast_reg[1] = v_f32_ld_g(p_QK1);
+        broadcast_reg[2] = v_f32_ld_g(p_QK2);
+        broadcast_reg[3] = v_f32_ld_g(p_QK3);
+
         V_coords[1] = broadcast_QK_dim;
-        __global__ float *p_QK = gen_addr(QK_coords, QK);
-        broadcast_reg = v_f32_ld_g(p_QK);
-#pragma loop_taken
-        for (int i = 0; i < process_64_kv_reg_num; i++)
-        {
-          KV_reg[i] = v_f32_ld_tnsr_b(V_coords, V);
-          acc_reg[i] = v_f32_mac_b(KV_reg[i], broadcast_reg, acc_reg[i]);
-        }
-#pragma loop_taken
-        for (int i = 0; i < process_64_kv_reg_num; i++)
-          v_f32_st_tnsr(Out_coords, Out, acc_reg[i]);
+        KV_reg[0] = v_f32_ld_tnsr_b(V_coords, V);
+        V_coords[1] += 1;
+        KV_reg[1] = v_f32_ld_tnsr_b(V_coords, V);
+        V_coords[1] += 1;
+        KV_reg[2] = v_f32_ld_tnsr_b(V_coords, V);
+        V_coords[1] += 1;
+        KV_reg[3] = v_f32_ld_tnsr_b(V_coords, V);
+
+        acc_reg[0] = v_f32_mac_b(KV_reg[0], broadcast_reg[0], acc_reg[0]);
+        acc_reg[1] = v_f32_mac_b(KV_reg[1], broadcast_reg[1], acc_reg[1]);
+        acc_reg[2] = v_f32_mac_b(KV_reg[2], broadcast_reg[2], acc_reg[2]);
+        acc_reg[3] = v_f32_mac_b(KV_reg[3], broadcast_reg[3], acc_reg[3]);
+
+        acc_reg[0] = v_f32_add_b(acc_reg[0], acc_reg[1]);
+        acc_reg[2] = v_f32_add_b(acc_reg[2], acc_reg[3]);
+        acc_reg[0] = v_f32_add_b(acc_reg[0], acc_reg[2]);
+
+        acc_reg[1] = 0.f;
+        acc_reg[2] = 0.f;
+        acc_reg[3] = 0.f;
       }
+      v_f32_st_tnsr(Out_coords, Out, acc_reg[0]);
     }
   }
 }
