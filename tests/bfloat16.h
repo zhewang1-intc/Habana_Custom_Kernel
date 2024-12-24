@@ -22,20 +22,20 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVE
 #include <stdint.h>
 #include <cfenv>
 
-#define FLOAT_BF16_MIN_VAL        (0x0080)
-#define FLOAT_BF16_MAX_VAL        (0x7f7f)
-#define EXPONENT_OFFSET_FP32      (23)
+#define FLOAT_BF16_MIN_VAL (0x0080)
+#define FLOAT_BF16_MAX_VAL (0x7f7f)
+#define EXPONENT_OFFSET_FP32 (23)
 
 inline float bf16ToFloat(uint16_t a)
 {
     uint32_t val_32b = ((uint32_t)a) << 16;
-    float* val_fp32 = reinterpret_cast<float*>(&val_32b);
+    float *val_fp32 = reinterpret_cast<float *>(&val_32b);
     return *val_fp32;
 }
 
 inline uint16_t floatToBf16(float input)
 {
-    uint32_t* val_32b = reinterpret_cast<uint32_t*>(&input);
+    uint32_t *val_32b = reinterpret_cast<uint32_t *>(&input);
     uint32_t inputUint = *val_32b;
     uint16_t res;
 
@@ -46,13 +46,13 @@ inline uint16_t floatToBf16(float input)
     else
     {
         uint32_t inputSign = (inputUint & (1UL << 31)) >> 31;
-        bool roundedMSB = ((inputUint & (1<<15)) != 0);
+        bool roundedMSB = ((inputUint & (1 << 15)) != 0);
 
         int32_t inputExponent = (inputUint >> EXPONENT_OFFSET_FP32) & 0xFF;
 
         int32_t outputExponent = inputExponent;
 
-        uint32_t inputMantissa = inputUint & ((1 << (EXPONENT_OFFSET_FP32+1)) - 1);
+        uint32_t inputMantissa = inputUint & ((1 << (EXPONENT_OFFSET_FP32 + 1)) - 1);
         inputMantissa |= (1 << EXPONENT_OFFSET_FP32);
 
         int32_t outputMantissa = inputMantissa >> 16;
@@ -90,29 +90,36 @@ inline uint16_t bf16Mult(uint16_t a, uint16_t b)
 class bfloat16
 {
 public:
-    bfloat16(float v = 0) {this->val = floatToBf16(v);}
+    bfloat16(float v = 0) { this->val = floatToBf16(v); }
 
-    float operator-(float rhs) {return bf16ToFloat(val) - rhs;}
-    float operator+(float rhs) {return bf16ToFloat(val) + rhs;}
-    bool operator<(float rhs) const {return bf16ToFloat(val) < rhs;}
-    bool operator>(float rhs) const{return bf16ToFloat(val) > rhs;}
-    bool operator!=(float rhs) const{return bf16ToFloat(val) != rhs;}
+    float operator-(float rhs) { return bf16ToFloat(val) - rhs; }
+    float operator+(float rhs) { return bf16ToFloat(val) + rhs; }
+    bool operator<(float rhs) const { return bf16ToFloat(val) < rhs; }
+    bool operator>(float rhs) const { return bf16ToFloat(val) > rhs; }
+    bool operator!=(float rhs) const { return bf16ToFloat(val) != rhs; }
 
-    bfloat16 operator+(bfloat16 rhs) 
+    bfloat16 operator+(bfloat16 rhs)
     {
         bfloat16 out;
         out.val = floatToBf16(bf16ToFloat(val) + bf16ToFloat(rhs.val));
         return out;
     }
 
-    bfloat16 operator-(bfloat16 rhs) 
+    bfloat16 operator*(bfloat16 rhs)
+    {
+        bfloat16 out;
+        out.val = floatToBf16(bf16ToFloat(val) * bf16ToFloat(rhs.val));
+        return out;
+    }
+
+    bfloat16 operator-(bfloat16 rhs)
     {
         bfloat16 out;
         out.val = floatToBf16(bf16ToFloat(val) - bf16ToFloat(rhs.val));
         return out;
     }
 
-    bfloat16 operator/(bfloat16 rhs) 
+    bfloat16 operator/(bfloat16 rhs)
     {
         bfloat16 out;
         out.val = floatToBf16(bf16ToFloat(val) / bf16ToFloat(rhs.val));
@@ -122,11 +129,10 @@ public:
     float abs(bfloat16 in)
     {
         return std::abs(bf16ToFloat(in.val));
-    
     }
 
-    operator double() const {return bf16ToFloat(val);}
-    operator float()  const {return bf16ToFloat(val);}
+    operator double() const { return bf16ToFloat(val); }
+    operator float() const { return bf16ToFloat(val); }
 
     uint16_t val;
 };

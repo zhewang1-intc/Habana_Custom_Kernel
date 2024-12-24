@@ -62,13 +62,13 @@ void DecodeFusedSdpaTest<T>::deocde_fused_sdpa_ref(
     int QK_coords[3] = {0};
     int V_coords[3] = {0};
     int Out_coords[3] = {0};
-    float QK_max = -9999999.f;
+    T QK_max = -9999999.f;
     bool is_bf16 = true;
     if constexpr (std::is_same<T, float>::value)
         is_bf16 = false;
     for (int cur_q_head = 0; cur_q_head < q_head; cur_q_head++)
     {
-        float exp_sum = 0.f;
+        T exp_sum = 0.f;
         Q_coords[2] = cur_q_head;
         K_coords[2] = cur_q_head / shared_kv_head;
         V_coords[2] = cur_q_head / shared_kv_head;
@@ -78,38 +78,37 @@ void DecodeFusedSdpaTest<T>::deocde_fused_sdpa_ref(
         {
             QK_coords[0] = cur_kv_seq;
             QK.SetElement(QK_coords, 0.f);
-            QK.SetElement(QK_coords, is_bf16 ? floatToBf16(0.f) : 0.f);
         }
         for (int cur_dim = 0; cur_dim < head_dim; cur_dim++)
         {
             Q_coords[0] = cur_dim;
             K_coords[1] = cur_dim;
             Out_coords[0] = cur_dim;
-            Out.SetElement(Out_coords, is_bf16 ? floatToBf16(0.f) : 0.f);
+            Out.SetElement(Out_coords, 0.f);
             for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
             {
                 K_coords[0] = cur_kv_seq;
                 QK_coords[0] = cur_kv_seq;
-                QK.SetElement(QK_coords, is_bf16 ? floatToBf16(QK.Bf16ElementAtCvtF32(QK_coords) + Q.Bf16ElementAtCvtF32(Q_coords) * K.Bf16ElementAtCvtF32(K_coords)) : QK.ElementAt(QK_coords) + Q.ElementAt(Q_coords) * K.ElementAt(K_coords));
+                QK.SetElement(QK_coords, QK.ElementAt(QK_coords) + Q.ElementAt(Q_coords) * K.ElementAt(K_coords));
             }
         }
         for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
         {
             QK_coords[0] = cur_kv_seq;
-            QK_max = std::max(QK_max, is_bf16 ? bf16ToFloat(QK.ElementAt(QK_coords)) : QK.ElementAt(QK_coords));
+            QK_max = QK_max > QK.ElementAt(QK_coords) ? QK_max : QK.ElementAt(QK_coords);
         }
-        std::cout << "ref QK_max: " << QK_max << std::endl;
+        std::cout << "ref QK_max: " << float(QK_max) << std::endl;
         for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
         {
             QK_coords[0] = cur_kv_seq;
-            QK.SetElement(QK_coords, is_bf16 ? floatToBf16(QK.Bf16ElementAtCvtF32(QK_coords) - QK_max) : QK.ElementAt(QK_coords) - QK_max);
-            QK.SetElement(QK_coords, is_bf16 ? floatToBf16(expf(QK.Bf16ElementAtCvtF32(QK_coords))) : expf(QK.ElementAt(QK_coords)));
-            exp_sum += is_bf16 ? QK.Bf16ElementAtCvtF32(QK_coords) : QK.ElementAt(QK_coords);
+            QK.SetElement(QK_coords, QK.ElementAt(QK_coords) - QK_max);
+            QK.SetElement(QK_coords, expf(float(QK.ElementAt(QK_coords))));
+            exp_sum = exp_sum + QK.ElementAt(QK_coords);
         }
         for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
         {
             QK_coords[0] = cur_kv_seq;
-            QK.SetElement(QK_coords, is_bf16 ? floatToBf16(QK.Bf16ElementAtCvtF32(QK_coords) / exp_sum) : QK.ElementAt(QK_coords) / exp_sum);
+            QK.SetElement(QK_coords, QK.ElementAt(QK_coords) / exp_sum);
         }
         for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
         {
@@ -119,7 +118,7 @@ void DecodeFusedSdpaTest<T>::deocde_fused_sdpa_ref(
             {
                 V_coords[0] = cur_dim;
                 Out_coords[0] = cur_dim;
-                Out.SetElement(Out_coords, is_bf16 ? floatToBf16(Out.Bf16ElementAtCvtF32(Out_coords) + QK.Bf16ElementAtCvtF32(QK_coords) * V.Bf16ElementAtCvtF32(V_coords)) : Out.ElementAt(Out_coords) + QK.ElementAt(QK_coords) * V.ElementAt(V_coords));
+                Out.SetElement(Out_coords, Out.ElementAt(Out_coords) + QK.ElementAt(QK_coords) * V.ElementAt(V_coords));
             }
         }
     }
@@ -141,17 +140,16 @@ int DecodeFusedSdpaTest<T>::runTest()
     uint64_t tmp_init[] = {kv_seq, q_seq, q_head};
     uint64_t k_init[] = {kv_seq, head_dim, kv_head};
     uint64_t v_init[] = {head_dim, kv_seq, kv_head};
-    float_3DTensor Q(q_init);
-    float_3DTensor K(k_init);
-    float_3DTensor QK(tmp_init);
-    float_3DTensor QK_ref(tmp_init);
-    float_3DTensor V(v_init);
-    float_3DTensor Out(q_init);
-    float_3DTensor Out_ref(q_init);
+    test::Tensor<T, 3> Q(q_init);
+    test::Tensor<T, 3> K(k_init);
+    test::Tensor<T, 3> QK(tmp_init);
+    test::Tensor<T, 3> QK_ref(tmp_init);
+    test::Tensor<T, 3> V(v_init);
+    test::Tensor<T, 3> Out(q_init);
+    test::Tensor<T, 3> Out_ref(q_init);
     Q.FillWithData(0);
     K.FillWithData(1);
     V.FillWithData(1);
-
     // execute reference implementation of the kernel.
     this->deocde_fused_sdpa_ref(Q, K, QK_ref, V, Out_ref);
 
@@ -201,9 +199,9 @@ int DecodeFusedSdpaTest<T>::runTest()
     ReleaseKernelNames(guids, kernelCount);
     for (int element = 0; element < QK_ref.ElementCount(); element++)
     {
-        if (abs(QK.Data()[element] - QK_ref.Data()[element]) > 10e-4)
+        if (abs(float(QK.Data()[element]) - float(QK_ref.Data()[element])) > 10e-3)
         {
-            std::cout << "err idx:" << element << ", value: " << QK.Data()[element] << " vs " << QK_ref.Data()[element] << std::endl;
+            std::cout << "err idx:" << element << ", value: " << float(QK.Data()[element]) << " vs " << float(QK_ref.Data()[element]) << std::endl;
             std::cout << "decode sdpa test failed!!" << std::endl;
             return -1;
         }

@@ -141,10 +141,6 @@ public:
         return m_pdata[offset];
     }
 
-    float Bf16ElementAtCvtF32(int coords[DIM]) const{
-        return bf16ToFloat(ElementAt(coords));
-    }
-
     void SetElement(int coords[DIM], T value)
     {
          int offset = 0;
@@ -218,10 +214,10 @@ public:
         {
             // m_pdata[i] = num;
             if(modulo==0){
-            m_pdata[i] = i;
+            m_pdata[i] = float(i);
             }
             else{
-            m_pdata[i] = i*0.1;
+            m_pdata[i] = float(i*0.1);
             }
             num += 1;
             if (num >= modulo)
