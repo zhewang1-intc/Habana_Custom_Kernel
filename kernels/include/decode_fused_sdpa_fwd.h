@@ -22,6 +22,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************/
 #define FLOAT32
+// #define BFLOAT16
 #include "kernel_config.h"
 #pragma tpc_printf(enable)
 
@@ -34,12 +35,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     printf("%f ", REG[i]);                                                     \
   printf("\n");
 
-__local__ float64 slm_test[1024 * 16 / 4 / 64];
+__local__ VECTOR slm_test[1024 * 16 / 4 / 64];
 void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
   const int5 Q_head_start = get_index_space_offset();
   const int5 Q_head_end = get_index_space_size() + Q_head_start;
 
-  const int depthStep = 64;
   const int head_dim = get_dim_size(Q, 0);
   const int q_seq_len = get_dim_size(Q, 1);
   const int kv_seq_len = get_dim_size(K, 0);
@@ -52,14 +52,18 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
   int5 V_coords = {0};
   int5 Out_coords = {0};
 
-  float64 sqrt_dk = 2.f; // todo: make it as param.
+  VECTOR sqrt_dk = 2.f; // todo: make it as param.
 
-  float64 broadcast_reg[broadcast_unroll];
-  float64 KV_reg[broadcast_unroll];
-  float64 acc_reg[broadcast_unroll];
-  float64 QK_max = -9999999999.f;
-  float64 QK_exp_sum;
+  VECTOR broadcast_reg[broadcast_unroll];
+  VECTOR KV_reg[broadcast_unroll];
+  VECTOR acc_reg[broadcast_unroll];
+  VECTOR QK_max = -9999999999.f;
+  VECTOR QK_exp_sum;
   float64 tmp = 1.f;
+
+#if defined(BFLOAT16)
+  float128 tmp_128;
+#endif
 
   for (int cur_q_head = Q_head_start[0]; cur_q_head < Q_head_end[0];
        cur_q_head++) {
@@ -69,7 +73,8 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
     QK_coords[2] = cur_q_head;
     Out_coords[2] = cur_q_head;
     // gemv
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += depthStep) {
+    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
+         cur_kv_seq += VECTOR_SIZE) {
       K_coords[0] = cur_kv_seq;
 #pragma loop_taken
       for (int i = 0; i < broadcast_unroll; i++)
@@ -122,7 +127,8 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
     QK_max = v_reduce_max_v_v(QK_max);
     printf("QK_max %f\n", QK_max[0]);
     QK_exp_sum = 0.f;
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += depthStep) {
+    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
+         cur_kv_seq += VECTOR_SIZE) {
 #ifdef NO_SLM_SOFTMAX
       QK_coords[0] = cur_kv_seq;
       acc_reg[0] = v_ld_tnsr_i(QK_coords, QK);
@@ -130,7 +136,14 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
       acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
 #endif
       acc_reg[0] = v_sub_v_v(acc_reg[0], QK_max);
+#ifdef FLOAT32
       acc_reg[0] = v_exp_f32(acc_reg[0]);
+#else
+      tmp_128 = convert_bfloat128_to_float128(acc_reg[0], SW_RHNE);
+      tmp_128.v1 = v_exp_f32(tmp_128.v1);
+      tmp_128.v2 = v_exp_f32(tmp_128.v2);
+      acc_reg[0] = convert_float128_to_bfloat128(tmp_128, SW_RHNE);
+#endif
 #ifdef NO_SLM_SOFTMAX
       st_tnsr_i_v(QK_coords, QK, acc_reg[0]);
 #else
@@ -139,8 +152,16 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
       QK_exp_sum = v_add_v_v(QK_exp_sum, acc_reg[0]);
     }
     QK_exp_sum = v_reduce_add_v_v(QK_exp_sum);
+#ifdef FLOAT32
     QK_exp_sum = v_div_f32(tmp, QK_exp_sum);
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += depthStep) {
+#else
+    tmp_128 = convert_bfloat128_to_float128(QK_exp_sum, SW_RHNE);
+    tmp_128.v1 = v_div_f32(tmp, tmp_128.v1);
+    tmp_128.v2 = v_div_f32(tmp, tmp_128.v2);
+    QK_exp_sum = convert_float128_to_bfloat128(tmp_128, SW_RHNE);
+#endif
+    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
+         cur_kv_seq += VECTOR_SIZE) {
       QK_coords[0] = cur_kv_seq;
 #ifdef NO_SLM_SOFTMAX
       acc_reg[0] = v_ld_tnsr_i(QK_coords, QK);
@@ -151,7 +172,7 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
       st_tnsr_i_v(QK_coords, QK, acc_reg[0]);
     }
     // QK * V gemv
-    for (int cur_dim = 0; cur_dim < head_dim; cur_dim += depthStep) {
+    for (int cur_dim = 0; cur_dim < head_dim; cur_dim += VECTOR_SIZE) {
       V_coords[0] = cur_dim;
       Out_coords[0] = cur_dim;
 #pragma loop_taken
