@@ -21,6 +21,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************/
+#define FLOAT32
 #include "kernel_config.h"
 #pragma tpc_printf(enable)
 
@@ -83,25 +84,25 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
         __global__ float *p_Q2 = gen_addr(Q_coords, Q);
         Q_coords[0] += 1;
         __global__ float *p_Q3 = gen_addr(Q_coords, Q);
-        broadcast_reg[0] = v_f32_ld_g(p_Q0);
-        broadcast_reg[1] = v_f32_ld_g(p_Q1);
-        broadcast_reg[2] = v_f32_ld_g(p_Q2);
-        broadcast_reg[3] = v_f32_ld_g(p_Q3);
+        broadcast_reg[0] = v_ld_g_a(p_Q0);
+        broadcast_reg[1] = v_ld_g_a(p_Q1);
+        broadcast_reg[2] = v_ld_g_a(p_Q2);
+        broadcast_reg[3] = v_ld_g_a(p_Q3);
         K_coords[1] = broadcast_Q_dim;
-        KV_reg[0] = v_f32_ld_tnsr_b(K_coords, K);
+        KV_reg[0] = v_ld_tnsr_i(K_coords, K);
         K_coords[1] += 1;
-        KV_reg[1] = v_f32_ld_tnsr_b(K_coords, K);
+        KV_reg[1] = v_ld_tnsr_i(K_coords, K);
         K_coords[1] += 1;
-        KV_reg[2] = v_f32_ld_tnsr_b(K_coords, K);
+        KV_reg[2] = v_ld_tnsr_i(K_coords, K);
         K_coords[1] += 1;
-        KV_reg[3] = v_f32_ld_tnsr_b(K_coords, K);
-        acc_reg[0] = v_f32_mac_b(KV_reg[0], broadcast_reg[0], acc_reg[0]);
-        acc_reg[1] = v_f32_mac_b(KV_reg[1], broadcast_reg[1], acc_reg[1]);
-        acc_reg[2] = v_f32_mac_b(KV_reg[2], broadcast_reg[2], acc_reg[2]);
-        acc_reg[3] = v_f32_mac_b(KV_reg[3], broadcast_reg[3], acc_reg[3]);
-        acc_reg[0] = v_f32_add_b(acc_reg[0], acc_reg[1]);
-        acc_reg[2] = v_f32_add_b(acc_reg[2], acc_reg[3]);
-        acc_reg[0] = v_f32_add_b(acc_reg[0], acc_reg[2]);
+        KV_reg[3] = v_ld_tnsr_i(K_coords, K);
+        acc_reg[0] = v_mac_v_v(KV_reg[0], broadcast_reg[0], acc_reg[0]);
+        acc_reg[1] = v_mac_v_v(KV_reg[1], broadcast_reg[1], acc_reg[1]);
+        acc_reg[2] = v_mac_v_v(KV_reg[2], broadcast_reg[2], acc_reg[2]);
+        acc_reg[3] = v_mac_v_v(KV_reg[3], broadcast_reg[3], acc_reg[3]);
+        acc_reg[0] = v_add_v_v(acc_reg[0], acc_reg[1]);
+        acc_reg[2] = v_add_v_v(acc_reg[2], acc_reg[3]);
+        acc_reg[0] = v_add_v_v(acc_reg[0], acc_reg[2]);
 
         acc_reg[1] = 0.f;
         acc_reg[2] = 0.f;
@@ -109,45 +110,45 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
       }
 
       QK_coords[0] = cur_kv_seq;
-      QK_max = v_f32_max_b(acc_reg[0], QK_max);
+      QK_max = v_max_v_v(acc_reg[0], QK_max);
 #ifdef NO_SLM_SOFTMAX
-      v_f32_st_tnsr(QK_coords, QK,
-                    acc_reg[0]); // TODO(zhe): move to slm when kv_seq is small.
+      st_tnsr_i_v(QK_coords, QK,
+                  acc_reg[0]); // TODO(zhe): move to slm when kv_seq is small.
 #else
       slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = acc_reg[i];
 #endif
     }
     // softmax
-    QK_max = v_f32_reduce_max(QK_max);
+    QK_max = v_reduce_max_v_v(QK_max);
     printf("QK_max %f\n", QK_max[0]);
     QK_exp_sum = 0.f;
     for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += depthStep) {
 #ifdef NO_SLM_SOFTMAX
       QK_coords[0] = cur_kv_seq;
-      acc_reg[0] = v_f32_ld_tnsr_b(QK_coords, QK);
+      acc_reg[0] = v_ld_tnsr_i(QK_coords, QK);
 #else
       acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
 #endif
-      acc_reg[0] = v_f32_sub_b(acc_reg[0], QK_max);
+      acc_reg[0] = v_sub_v_v(acc_reg[0], QK_max);
       acc_reg[0] = v_exp_f32(acc_reg[0]);
 #ifdef NO_SLM_SOFTMAX
-      v_f32_st_tnsr(QK_coords, QK, acc_reg[0]);
+      st_tnsr_i_v(QK_coords, QK, acc_reg[0]);
 #else
       slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = acc_reg[i];
 #endif
-      QK_exp_sum = v_f32_add_b(QK_exp_sum, acc_reg[0]);
+      QK_exp_sum = v_add_v_v(QK_exp_sum, acc_reg[0]);
     }
-    QK_exp_sum = v_f32_reduce_add(QK_exp_sum);
+    QK_exp_sum = v_reduce_add_v_v(QK_exp_sum);
     QK_exp_sum = v_div_f32(tmp, QK_exp_sum);
     for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += depthStep) {
       QK_coords[0] = cur_kv_seq;
 #ifdef NO_SLM_SOFTMAX
-      acc_reg[0] = v_f32_ld_tnsr_b(QK_coords, QK);
+      acc_reg[0] = v_ld_tnsr_i(QK_coords, QK);
 #else
       acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
 #endif
-      acc_reg[0] = v_f32_mul_b(acc_reg[0], QK_exp_sum);
-      v_f32_st_tnsr(QK_coords, QK, acc_reg[0]);
+      acc_reg[0] = v_mul_v_v(acc_reg[0], QK_exp_sum);
+      st_tnsr_i_v(QK_coords, QK, acc_reg[0]);
     }
     // QK * V gemv
     for (int cur_dim = 0; cur_dim < head_dim; cur_dim += depthStep) {
@@ -166,34 +167,34 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
         __global__ float *p_QK2 = gen_addr(QK_coords, QK);
         QK_coords[0] += 1;
         __global__ float *p_QK3 = gen_addr(QK_coords, QK);
-        broadcast_reg[0] = v_f32_ld_g(p_QK0);
-        broadcast_reg[1] = v_f32_ld_g(p_QK1);
-        broadcast_reg[2] = v_f32_ld_g(p_QK2);
-        broadcast_reg[3] = v_f32_ld_g(p_QK3);
+        broadcast_reg[0] = v_ld_g_a(p_QK0);
+        broadcast_reg[1] = v_ld_g_a(p_QK1);
+        broadcast_reg[2] = v_ld_g_a(p_QK2);
+        broadcast_reg[3] = v_ld_g_a(p_QK3);
 
         V_coords[1] = broadcast_QK_dim;
-        KV_reg[0] = v_f32_ld_tnsr_b(V_coords, V);
+        KV_reg[0] = v_ld_tnsr_i(V_coords, V);
         V_coords[1] += 1;
-        KV_reg[1] = v_f32_ld_tnsr_b(V_coords, V);
+        KV_reg[1] = v_ld_tnsr_i(V_coords, V);
         V_coords[1] += 1;
-        KV_reg[2] = v_f32_ld_tnsr_b(V_coords, V);
+        KV_reg[2] = v_ld_tnsr_i(V_coords, V);
         V_coords[1] += 1;
-        KV_reg[3] = v_f32_ld_tnsr_b(V_coords, V);
+        KV_reg[3] = v_ld_tnsr_i(V_coords, V);
 
-        acc_reg[0] = v_f32_mac_b(KV_reg[0], broadcast_reg[0], acc_reg[0]);
-        acc_reg[1] = v_f32_mac_b(KV_reg[1], broadcast_reg[1], acc_reg[1]);
-        acc_reg[2] = v_f32_mac_b(KV_reg[2], broadcast_reg[2], acc_reg[2]);
-        acc_reg[3] = v_f32_mac_b(KV_reg[3], broadcast_reg[3], acc_reg[3]);
+        acc_reg[0] = v_mac_v_v(KV_reg[0], broadcast_reg[0], acc_reg[0]);
+        acc_reg[1] = v_mac_v_v(KV_reg[1], broadcast_reg[1], acc_reg[1]);
+        acc_reg[2] = v_mac_v_v(KV_reg[2], broadcast_reg[2], acc_reg[2]);
+        acc_reg[3] = v_mac_v_v(KV_reg[3], broadcast_reg[3], acc_reg[3]);
 
-        acc_reg[0] = v_f32_add_b(acc_reg[0], acc_reg[1]);
-        acc_reg[2] = v_f32_add_b(acc_reg[2], acc_reg[3]);
-        acc_reg[0] = v_f32_add_b(acc_reg[0], acc_reg[2]);
+        acc_reg[0] = v_add_v_v(acc_reg[0], acc_reg[1]);
+        acc_reg[2] = v_add_v_v(acc_reg[2], acc_reg[3]);
+        acc_reg[0] = v_add_v_v(acc_reg[0], acc_reg[2]);
 
         acc_reg[1] = 0.f;
         acc_reg[2] = 0.f;
         acc_reg[3] = 0.f;
       }
-      v_f32_st_tnsr(Out_coords, Out, acc_reg[0]);
+      st_tnsr_i_v(Out_coords, Out, acc_reg[0]);
     }
   }
 }

@@ -150,6 +150,7 @@ int DecodeFusedSdpaTest<T>::runTest()
     float_3DTensor Out_ref(q_init);
     Q.FillWithData(0);
     K.FillWithData(1);
+    V.FillWithData(1);
 
     // execute reference implementation of the kernel.
     this->deocde_fused_sdpa_ref(Q, K, QK_ref, V, Out_ref);
