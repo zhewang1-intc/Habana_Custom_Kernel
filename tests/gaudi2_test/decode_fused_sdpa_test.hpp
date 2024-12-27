@@ -129,11 +129,11 @@ int DecodeFusedSdpaTest<T>::runTest()
 {
 
     // Initalize input size
-    const int q_head = 2;
+    const int q_head = 8;
     const int q_seq = 1;
-    const int head_dim = 128;
-    const int kv_head = 1;
-    const int kv_seq = 128;
+    const int head_dim = 64;
+    const int kv_head = 2;
+    const int kv_seq = 64;
 
     // Initalize inputs
     uint64_t q_init[] = {head_dim, q_seq, q_head};

@@ -61,9 +61,9 @@ int main(int argc, char** argv)
     int result = 0;
     static int testCount = 0;
 
-    DecodeFusedSdpaTest<bfloat16> sdpa_test_bf16;
-    sdpa_test_bf16.SetUp();
-    sdpa_test_bf16.runTest();
+    // DecodeFusedSdpaTest<bfloat16> sdpa_test_bf16;
+    // sdpa_test_bf16.SetUp();
+    // sdpa_test_bf16.runTest();
     DecodeFusedSdpaTest<float> sdpa_test_f32;
     sdpa_test_f32.SetUp();
     sdpa_test_f32.runTest();

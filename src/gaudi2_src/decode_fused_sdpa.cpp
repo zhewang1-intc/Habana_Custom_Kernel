@@ -80,13 +80,13 @@ tpc_lib_api::GlueCodeReturn DecodeFusedSdpaGaudi2::GetGcDefinitions(
      **************************************************************************************/
     int elementsInVec = sdpa_mode == decode_fused_sdpa_bf16_fwd ? 128 : 64;
     uint64_t outputSizes[gcapi::MAX_TENSOR_DIM] = {0};
-    memcpy(outputSizes, in_defs->inputTensors[0].geometry.maxSizes, sizeof(outputSizes));
+    memcpy(outputSizes, in_defs->inputTensors[1].geometry.maxSizes, sizeof(outputSizes));
 
     // round up to elementsInVec and divide by elementsInVec.
     unsigned depthIndex = (outputSizes[0] + (elementsInVec - 1)) / elementsInVec;
-    unsigned q_head_num = outputSizes[2];
+    unsigned kv_head_num = outputSizes[2];
     out_defs->indexSpaceRank = 1;
-    out_defs->indexSpaceGeometry[0] = q_head_num;
+    out_defs->indexSpaceGeometry[0] = kv_head_num;
     // reduce index space due to unroll.
     // out_defs->indexSpaceGeometry[1] = (outputSizes[1] + (c_unrollCount - 1)) / c_unrollCount;
     // out_defs->indexSpaceGeometry[2] = outputSizes[2];
