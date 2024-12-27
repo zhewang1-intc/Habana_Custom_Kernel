@@ -129,15 +129,15 @@ int DecodeFusedSdpaTest<T>::runTest()
 {
 
     // Initalize input size
-    const int q_head = 8;
+    const int q_head = 32;
     const int q_seq = 1;
-    const int head_dim = 64;
-    const int kv_head = 2;
-    const int kv_seq = 64;
+    const int head_dim = 128;
+    const int kv_head = 8;
+    const int kv_seq = 1024;
 
     // Initalize inputs
-    uint64_t q_init[] = {head_dim, q_seq, q_head};
-    uint64_t tmp_init[] = {kv_seq, q_seq, q_head};
+    uint64_t q_init[] = {head_dim, 1, q_head};
+    uint64_t tmp_init[] = {kv_seq, 3, q_head};
     uint64_t k_init[] = {kv_seq, head_dim, kv_head};
     uint64_t v_init[] = {head_dim, kv_seq, kv_head};
     test::Tensor<T, 3> Q(q_init);
@@ -200,11 +200,11 @@ int DecodeFusedSdpaTest<T>::runTest()
     // execute a simulation of the kernel using TPC simulator,
     TestBase::RunSimulation(vec, m_in_defs, m_out_defs);
     ReleaseKernelNames(guids, kernelCount);
-    for (int element = 0; element < QK_ref.ElementCount(); element++)
+    for (int element = 0; element < Out_ref.ElementCount(); element++)
     {
-        if (abs(float(QK.Data()[element]) - float(QK_ref.Data()[element])) > 10e-3)
+        if (abs(float(Out.Data()[element]) - float(Out_ref.Data()[element])) > 10e-3)
         {
-            std::cout << "err idx:" << element << ", value: " << float(QK.Data()[element]) << " vs " << float(QK_ref.Data()[element]) << std::endl;
+            std::cout << "err idx:" << element << ", value: " << float(Out.Data()[element]) << " vs " << float(Out_ref.Data()[element]) << std::endl;
             std::cout << "decode sdpa test failed!!" << std::endl;
             return -1;
         }
