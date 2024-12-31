@@ -27,18 +27,20 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define broadcast_unroll 4 // should same as repeat_kv_num.
 #define NO_SLM_SOFTMAX
 
-#define PRINT_REG_VALUE(NAME, REG)                                             \
-  printf(NAME);                                                                \
-  for (int i = 0; i < 64; i++)                                                 \
-    printf("%f ", REG[i]);                                                     \
+#define PRINT_REG_VALUE(NAME, REG) \
+  printf(NAME);                    \
+  for (int i = 0; i < 1; i++)      \
+    printf("%f ", REG[i]);         \
   printf("\n");
 
-void dump_max(bfloat128 reg) {
+void dump_max(bfloat128 reg)
+{
   float128 t = convert_bfloat128_to_float128(reg, SW_RHNE);
   printf("QK_max %f\n", t.v1[0]);
 }
 
-bfloat128 bf16_exp(bfloat128 reg) {
+bfloat128 bf16_exp(bfloat128 reg)
+{
   float128 tmp_128 = convert_bfloat128_to_float128(reg, SW_RHNE);
   tmp_128.v1 = v_exp_f32(tmp_128.v1);
   tmp_128.v2 = v_exp_f32(tmp_128.v2);
@@ -46,13 +48,23 @@ bfloat128 bf16_exp(bfloat128 reg) {
   return reg;
 }
 
-// #define bf16_div(reg)                                        \
-//       tmp_128 = convert_bfloat128_to_float128(reg, SW_RHNE); \
-//       tmp_128.v1 = v_div_f32(tmp, tmp_128.v1);               \
-//       tmp_128.v2 = v_div_f32(tmp, tmp_128.v2);               \
-//       reg = convert_float128_to_bfloat128(tmp_128, SW_RHNE);
+#define aso_init() \
+  int count = 0;   \
+  set_semaphore_value(0);
 
-bfloat128 bf16_div(bfloat128 reg, float64 tmp) {
+#define aso_wait()                          \
+  {                                         \
+    aso(SW_INC | SW_VPU);                   \
+    volatile int a = get_semaphore_value(); \
+    while (a == count)                      \
+    {                                       \
+      a = get_semaphore_value();            \
+    }                                       \
+    count++;                                \
+  }
+
+bfloat128 bf16_div(bfloat128 reg, float64 tmp)
+{
   float128 tmp_128 = convert_bfloat128_to_float128(reg, SW_RHNE);
   tmp_128.v1 = v_div_f32(tmp, tmp_128.v1);
   tmp_128.v2 = v_div_f32(tmp, tmp_128.v2);
@@ -60,22 +72,24 @@ bfloat128 bf16_div(bfloat128 reg, float64 tmp) {
   return reg;
 }
 
-#define set_coords_unify_dim(coords, dim, v)                                   \
-  coords[0][dim] = v;                                                          \
-  coords[1][dim] = v;                                                          \
-  coords[2][dim] = v;                                                          \
+#define set_coords_unify_dim(coords, dim, v) \
+  coords[0][dim] = v;                        \
+  coords[1][dim] = v;                        \
+  coords[2][dim] = v;                        \
   coords[3][dim] = v;
 
-#define set_coords_unroll_dim(coords, dim, v)                                  \
-  coords[0][dim] = v * broadcast_unroll;                                       \
-  coords[1][dim] = v * broadcast_unroll + 1;                                   \
-  coords[2][dim] = v * broadcast_unroll + 2;                                   \
+#define set_coords_unroll_dim(coords, dim, v) \
+  coords[0][dim] = v * broadcast_unroll;      \
+  coords[1][dim] = v * broadcast_unroll + 1;  \
+  coords[2][dim] = v * broadcast_unroll + 2;  \
   coords[3][dim] = v * broadcast_unroll + 3;
 
-__local__ VECTOR slm_test[1024 * 16 / 4 / 64];
-void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
+void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out)
+{
   const int5 K_head_start = get_index_space_offset();
   const int5 K_head_end = get_index_space_size() + K_head_start;
+
+  aso_init();
 
   const int head_dim = get_dim_size(Q, 0);
   const int q_seq_len = get_dim_size(Q, 1);
@@ -84,15 +98,9 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
   const int kv_head_num = get_dim_size(K, 2);
   const int repeat_kv_num = q_head_num / kv_head_num;
 
-  printf("k_start %d\n", K_head_start[0]);
-  printf("k_end %d\n", K_head_end[0]);
-  printf("kv seq len %d\n", kv_seq_len);
-
-  int5 Q_coords = {0};
+  int5 Q_coords[4];
   int5 K_coords = {0};
   int5 QK_coords[4];
-  int5 QK_sub_coords[4];
-  int5 QK_div_coords[4];
   int5 V_coords = {0};
   int5 Out_coords[4];
 
@@ -107,38 +115,33 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
   float128 tmp_128;
 
   set_coords_unify_dim(QK_coords, 1, 0);
-  set_coords_unify_dim(QK_sub_coords, 1, 1);
-  set_coords_unify_dim(QK_div_coords, 1, 2);
   set_coords_unify_dim(Out_coords, 1, 0);
+  set_coords_unify_dim(Q_coords, 1, 0);
 
-  for (int cur_k_head = K_head_start[0]; cur_k_head < K_head_end[0];
-       cur_k_head++) {
+  for (int cur_k_head = K_head_start[0]; cur_k_head < K_head_end[0]; cur_k_head++)
+  {
     K_coords[2] = cur_k_head;
     V_coords[2] = cur_k_head;
+    set_coords_unroll_dim(Q_coords, 2, cur_k_head);
     set_coords_unroll_dim(QK_coords, 2, cur_k_head);
-    set_coords_unroll_dim(QK_sub_coords, 2, cur_k_head);
-    set_coords_unroll_dim(QK_div_coords, 2, cur_k_head);
     set_coords_unroll_dim(Out_coords, 2, cur_k_head);
     // gemv
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
-         cur_kv_seq += VECTOR_SIZE) {
+    for (int i = 0; i < broadcast_unroll; i++)
+      QK_max[i] = 0.f;
+    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
+    {
       K_coords[0] = cur_kv_seq;
-#pragma loop_taken
-      for (int i = 0; i < broadcast_unroll; i++) {
+      for (int i = 0; i < broadcast_unroll; i++)
+      {
         acc_reg[i] = 0.f;
-        QK_max[i] = 0.f;
       }
-      for (int broadcast_Q_dim = 0; broadcast_Q_dim < head_dim;
-           broadcast_Q_dim++) {
-        Q_coords[2] = cur_k_head * broadcast_unroll;
-        Q_coords[0] = broadcast_Q_dim;
-        __global__ float *p_Q0 = gen_addr(Q_coords, Q);
-        Q_coords[2] += 1;
-        __global__ float *p_Q1 = gen_addr(Q_coords, Q);
-        Q_coords[2] += 1;
-        __global__ float *p_Q2 = gen_addr(Q_coords, Q);
-        Q_coords[2] += 1;
-        __global__ float *p_Q3 = gen_addr(Q_coords, Q);
+      for (int broadcast_Q_dim = 0; broadcast_Q_dim < head_dim; broadcast_Q_dim++)
+      {
+        set_coords_unify_dim(Q_coords, 0, broadcast_Q_dim);
+        __global__ float *p_Q0 = gen_addr(Q_coords[0], Q);
+        __global__ float *p_Q1 = gen_addr(Q_coords[1], Q);
+        __global__ float *p_Q2 = gen_addr(Q_coords[2], Q);
+        __global__ float *p_Q3 = gen_addr(Q_coords[3], Q);
         broadcast_reg[0] = v_ld_g_a(p_Q0);
         broadcast_reg[1] = v_ld_g_a(p_Q1);
         broadcast_reg[2] = v_ld_g_a(p_Q2);
@@ -183,8 +186,9 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
     QK_exp_sum[1] = 0.f;
     QK_exp_sum[2] = 0.f;
     QK_exp_sum[3] = 0.f;
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
-         cur_kv_seq += VECTOR_SIZE) {
+    aso_wait();
+    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
+    {
       set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
       acc_reg[0] = v_ld_tnsr_i(QK_coords[0], QK);
       acc_reg[1] = v_ld_tnsr_i(QK_coords[1], QK);
@@ -205,16 +209,13 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
       acc_reg[2] = bf16_exp(acc_reg[2]);
       acc_reg[3] = bf16_exp(acc_reg[3]);
 #endif
-#ifdef NO_SLM_SOFTMAX
 
-      set_coords_unify_dim(QK_sub_coords, 0, cur_kv_seq);
-      st_tnsr_i_v(QK_sub_coords[0], QK, acc_reg[0]);
-      st_tnsr_i_v(QK_sub_coords[1], QK, acc_reg[1]);
-      st_tnsr_i_v(QK_sub_coords[2], QK, acc_reg[2]);
-      st_tnsr_i_v(QK_sub_coords[3], QK, acc_reg[3]);
-#else
-      slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)] = acc_reg[i];
-#endif
+      set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
+      st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
+      st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
+      st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
+      st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
+
       QK_exp_sum[0] = v_add_v_v(QK_exp_sum[0], acc_reg[0]);
       QK_exp_sum[1] = v_add_v_v(QK_exp_sum[1], acc_reg[1]);
       QK_exp_sum[2] = v_add_v_v(QK_exp_sum[2], acc_reg[2]);
@@ -235,15 +236,15 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
     QK_exp_sum[2] = bf16_div(QK_exp_sum[2], tmp);
     QK_exp_sum[3] = bf16_div(QK_exp_sum[3], tmp);
 #endif
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len;
-         cur_kv_seq += VECTOR_SIZE) {
-      set_coords_unify_dim(QK_sub_coords, 0, cur_kv_seq);
-      set_coords_unify_dim(QK_div_coords, 0, cur_kv_seq);
+    aso_wait();
+    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
+    {
+      set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
 #ifdef NO_SLM_SOFTMAX
-      acc_reg[0] = v_ld_tnsr_i(QK_sub_coords[0], QK);
-      acc_reg[1] = v_ld_tnsr_i(QK_sub_coords[1], QK);
-      acc_reg[2] = v_ld_tnsr_i(QK_sub_coords[2], QK);
-      acc_reg[3] = v_ld_tnsr_i(QK_sub_coords[3], QK);
+      acc_reg[0] = v_ld_tnsr_i(QK_coords[0], QK);
+      acc_reg[1] = v_ld_tnsr_i(QK_coords[1], QK);
+      acc_reg[2] = v_ld_tnsr_i(QK_coords[2], QK);
+      acc_reg[3] = v_ld_tnsr_i(QK_coords[3], QK);
 #else
       acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
 #endif
@@ -251,25 +252,27 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out) {
       acc_reg[1] = v_mul_v_v(acc_reg[1], QK_exp_sum[1]);
       acc_reg[2] = v_mul_v_v(acc_reg[2], QK_exp_sum[2]);
       acc_reg[3] = v_mul_v_v(acc_reg[3], QK_exp_sum[3]);
-      st_tnsr_i_v(QK_div_coords[0], QK, acc_reg[0]);
-      st_tnsr_i_v(QK_div_coords[1], QK, acc_reg[1]);
-      st_tnsr_i_v(QK_div_coords[2], QK, acc_reg[2]);
-      st_tnsr_i_v(QK_div_coords[3], QK, acc_reg[3]);
+      st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
+      st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
+      st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
+      st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
     }
+    aso_wait();
     // QK *V gemv
-    for (int cur_dim = 0; cur_dim < head_dim; cur_dim += VECTOR_SIZE) {
+    for (int cur_dim = 0; cur_dim < head_dim; cur_dim += VECTOR_SIZE)
+    {
       V_coords[0] = cur_dim;
       set_coords_unify_dim(Out_coords, 0, cur_dim);
 #pragma loop_taken
       for (int i = 0; i < broadcast_unroll; i++)
         acc_reg[i] = 0.f;
-      for (int broadcast_QK_dim = 0; broadcast_QK_dim < kv_seq_len;
-           broadcast_QK_dim++) {
-        set_coords_unify_dim(QK_div_coords, 0, broadcast_QK_dim);
-        __global__ float *p_QK0 = gen_addr(QK_div_coords[0], QK);
-        __global__ float *p_QK1 = gen_addr(QK_div_coords[1], QK);
-        __global__ float *p_QK2 = gen_addr(QK_div_coords[2], QK);
-        __global__ float *p_QK3 = gen_addr(QK_div_coords[3], QK);
+      for (int broadcast_QK_dim = 0; broadcast_QK_dim < kv_seq_len; broadcast_QK_dim++)
+      {
+        set_coords_unify_dim(QK_coords, 0, broadcast_QK_dim);
+        __global__ float *p_QK0 = gen_addr(QK_coords[0], QK);
+        __global__ float *p_QK1 = gen_addr(QK_coords[1], QK);
+        __global__ float *p_QK2 = gen_addr(QK_coords[2], QK);
+        __global__ float *p_QK3 = gen_addr(QK_coords[3], QK);
         broadcast_reg[0] = v_ld_g_a(p_QK0);
         broadcast_reg[1] = v_ld_g_a(p_QK1);
         broadcast_reg[2] = v_ld_g_a(p_QK2);
