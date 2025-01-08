@@ -31,11 +31,13 @@ public:
     int runTest();
 
     static void deocde_fused_sdpa_ref(
-        test::Tensor<T, 3> &Q,
-        test::Tensor<T, 3> &K,
-        test::Tensor<T, 3> &QK,
-        test::Tensor<T, 3> &V,
-        test::Tensor<T, 3> &Out);
+        test::Tensor<T, 4> &Q,
+        test::Tensor<T, 4> &K,
+        test::Tensor<T, 4> &QK,
+        test::Tensor<T, 4> &V,
+        test::Tensor<int, 1> &kv_seq_len_ts,
+        test::Tensor<T, 4> &Out,
+        float sqrt_dk);
 
 private:
     DecodeFusedSdpaTest(const DecodeFusedSdpaTest &other) = delete;
@@ -44,123 +46,145 @@ private:
 
 template <typename T>
 void DecodeFusedSdpaTest<T>::deocde_fused_sdpa_ref(
-    test::Tensor<T, 3> &Q,
-    test::Tensor<T, 3> &K,
-    test::Tensor<T, 3> &QK,
-    test::Tensor<T, 3> &V,
-    test::Tensor<T, 3> &Out)
+    test::Tensor<T, 4> &Q,
+    test::Tensor<T, 4> &K,
+    test::Tensor<T, 4> &QK,
+    test::Tensor<T, 4> &V,
+    test::Tensor<int, 1> &kv_seq_len_ts,
+    test::Tensor<T, 4> &Out,
+    float sqrt_dk)
 {
     int q_head = Q.Size(2);
     int kv_head = K.Size(2);
     int head_dim = Q.Size(0);
     int kv_seq = K.Size(0);
+    int batch = Q.Size(3);
     int q_seq = Q.Size(1);
-    int kv_seq_len = K.Size(0);
     int shared_kv_head = q_head / kv_head;
-    int Q_coords[3] = {0};
-    int K_coords[3] = {0};
-    int QK_coords[3] = {0};
-    int V_coords[3] = {0};
-    int Out_coords[3] = {0};
+    int Q_coords[4] = {0};
+    int K_coords[4] = {0};
+    int QK_coords[4] = {0};
+    int V_coords[4] = {0};
+    int Out_coords[4] = {0};
+    int dyn_kv_len_coords[1] = {0};
     T QK_max = -9999999.f;
-    bool is_bf16 = true;
-    if constexpr (std::is_same<T, float>::value)
-        is_bf16 = false;
-    for (int cur_q_head = 0; cur_q_head < q_head; cur_q_head++)
+
+    for (int cur_batch = 0; cur_batch < batch; cur_batch++)
     {
-        T exp_sum = 0.f;
-        Q_coords[2] = cur_q_head;
-        K_coords[2] = cur_q_head / shared_kv_head;
-        V_coords[2] = cur_q_head / shared_kv_head;
-        QK_coords[2] = cur_q_head;
-        Out_coords[2] = cur_q_head;
-        for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
+        Q_coords[3] = cur_batch;
+        K_coords[3] = cur_batch;
+        V_coords[3] = cur_batch;
+        QK_coords[3] = cur_batch;
+        Out_coords[3] = cur_batch;
+        dyn_kv_len_coords[0] = cur_batch;
+        int kv_seq_len = kv_seq_len_ts.ElementAt(dyn_kv_len_coords);
+        for (int cur_q_head = 0; cur_q_head < q_head; cur_q_head++)
         {
-            QK_coords[0] = cur_kv_seq;
-            QK.SetElement(QK_coords, 0.f);
-        }
-        for (int cur_dim = 0; cur_dim < head_dim; cur_dim++)
-        {
-            Q_coords[0] = cur_dim;
-            K_coords[1] = cur_dim;
-            Out_coords[0] = cur_dim;
-            Out.SetElement(Out_coords, 0.f);
+            T exp_sum = 0.f;
+            Q_coords[2] = cur_q_head;
+            K_coords[2] = cur_q_head / shared_kv_head;
+            V_coords[2] = cur_q_head / shared_kv_head;
+            QK_coords[2] = cur_q_head;
+            Out_coords[2] = cur_q_head;
             for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
             {
-                K_coords[0] = cur_kv_seq;
                 QK_coords[0] = cur_kv_seq;
-                QK.SetElement(QK_coords, QK.ElementAt(QK_coords) + Q.ElementAt(Q_coords) * K.ElementAt(K_coords));
+                QK.SetElement(QK_coords, 0.f);
             }
-        }
-        for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
-        {
-            QK_coords[0] = cur_kv_seq;
-            QK_max = QK_max > QK.ElementAt(QK_coords) ? QK_max : QK.ElementAt(QK_coords);
-        }
-        std::cout << "ref QK_max: " << float(QK_max) << std::endl;
-        for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
-        {
-            QK_coords[0] = cur_kv_seq;
-            QK.SetElement(QK_coords, QK.ElementAt(QK_coords) - QK_max);
-            QK.SetElement(QK_coords, expf(float(QK.ElementAt(QK_coords))));
-            exp_sum = exp_sum + QK.ElementAt(QK_coords);
-        }
-        for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
-        {
-            QK_coords[0] = cur_kv_seq;
-            QK.SetElement(QK_coords, QK.ElementAt(QK_coords) / exp_sum);
-        }
-        for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
-        {
-            QK_coords[0] = cur_kv_seq;
-            V_coords[1] = cur_kv_seq;
             for (int cur_dim = 0; cur_dim < head_dim; cur_dim++)
             {
-                V_coords[0] = cur_dim;
+                Q_coords[0] = cur_dim;
+                K_coords[1] = cur_dim;
                 Out_coords[0] = cur_dim;
-                Out.SetElement(Out_coords, Out.ElementAt(Out_coords) + QK.ElementAt(QK_coords) * V.ElementAt(V_coords));
+                Out.SetElement(Out_coords, 0.f);
+                for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
+                {
+                    K_coords[0] = cur_kv_seq;
+                    QK_coords[0] = cur_kv_seq;
+                    QK.SetElement(QK_coords, QK.ElementAt(QK_coords) + Q.ElementAt(Q_coords) * K.ElementAt(K_coords));
+                }
+            }
+            for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
+            {
+                QK_coords[0] = cur_kv_seq;
+                QK_max = QK_max > QK.ElementAt(QK_coords) * sqrt_dk ? QK_max : QK.ElementAt(QK_coords) * sqrt_dk;
+            }
+            std::cout << "ref QK_max: " << float(QK_max) << std::endl;
+            for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
+            {
+                QK_coords[0] = cur_kv_seq;
+                QK.SetElement(QK_coords, QK.ElementAt(QK_coords) - QK_max);
+                QK.SetElement(QK_coords, expf(float(QK.ElementAt(QK_coords))));
+                exp_sum = exp_sum + QK.ElementAt(QK_coords);
+            }
+            for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
+            {
+                QK_coords[0] = cur_kv_seq;
+                QK.SetElement(QK_coords, QK.ElementAt(QK_coords) / exp_sum);
+            }
+            for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
+            {
+                QK_coords[0] = cur_kv_seq;
+                V_coords[1] = cur_kv_seq;
+                for (int cur_dim = 0; cur_dim < head_dim; cur_dim++)
+                {
+                    V_coords[0] = cur_dim;
+                    Out_coords[0] = cur_dim;
+                    Out.SetElement(Out_coords, Out.ElementAt(Out_coords) + QK.ElementAt(QK_coords) * V.ElementAt(V_coords));
+                }
             }
         }
     }
 }
-
 template <typename T>
 int DecodeFusedSdpaTest<T>::runTest()
 {
 
     // Initalize input size
+    const int batch = 2;
+    const int n_contex = 192;
     const int q_head = 4;
     const int q_seq = 1;
-    const int head_dim = 128;
+    const int head_dim = 64;
     const int kv_head = 1;
-    const int kv_seq = 128;
-
+    float sqrt_dk = 1.2f;
     // Initalize inputs
-    uint64_t q_init[] = {head_dim, 1, q_head};
-    uint64_t tmp_init[] = {kv_seq, 1, q_head};
-    uint64_t k_init[] = {kv_seq, head_dim, kv_head};
-    uint64_t v_init[] = {head_dim, kv_seq, kv_head};
-    test::Tensor<T, 3> Q(q_init);
-    test::Tensor<T, 3> K(k_init);
-    test::Tensor<T, 3> QK(tmp_init);
-    test::Tensor<T, 3> QK_ref(tmp_init);
-    test::Tensor<T, 3> V(v_init);
-    test::Tensor<T, 3> Out(q_init);
-    test::Tensor<T, 3> Out_ref(q_init);
+    uint64_t q_init[] = {head_dim, 1, q_head, batch};
+    uint64_t tmp_init[] = {n_contex, 1, q_head, batch};
+    uint64_t k_init[] = {n_contex, head_dim, kv_head, batch};
+    uint64_t v_init[] = {head_dim, n_contex, kv_head, batch};
+    uint64_t dyn_kv_len_init[] = {batch};
+    test::Tensor<T, 4> Q(q_init);
+    test::Tensor<T, 4> K(k_init);
+    test::Tensor<T, 4> QK(tmp_init);
+    test::Tensor<T, 4> QK_ref(tmp_init);
+    test::Tensor<T, 4> V(v_init);
+    test::Tensor<T, 4> Out(q_init);
+    test::Tensor<T, 4> Out_ref(q_init);
+    test::Tensor<int, 1> dyn_kv_len(dyn_kv_len_init);
     Q.FillWithData(0);
     K.FillWithData(1);
     V.FillWithData(1);
+    int dyn_kv_len_coords[] = {0};
+    dyn_kv_len.SetElement(dyn_kv_len_coords, 64);
+    dyn_kv_len_coords[0] = 1;
+    dyn_kv_len.SetElement(dyn_kv_len_coords, 128);
     // execute reference implementation of the kernel.
-    this->deocde_fused_sdpa_ref(Q, K, QK_ref, V, Out_ref);
+    this->deocde_fused_sdpa_ref(Q, K, QK_ref, V, dyn_kv_len, Out_ref, sqrt_dk);
 
     // generate input for query call
     m_in_defs.deviceId = tpc_lib_api::DEVICE_ID_GAUDI2;
-    // m_in_defs.nodeParams.nodeParams = &def;
-    m_in_defs.inputTensorNr = 4;
+
+    DecodeFusedSdpaGaudi2::DecodeFusedSdpaParam ker_param;
+    ker_param.sqr_dk = sqrt_dk;
+    m_in_defs.nodeParams.nodeParams = &ker_param;
+
+    m_in_defs.inputTensorNr = 5;
     LoadTensorToGcDescriptor(&(m_in_defs.inputTensors[0]), Q);
     LoadTensorToGcDescriptor(&(m_in_defs.inputTensors[1]), K);
     LoadTensorToGcDescriptor(&(m_in_defs.inputTensors[2]), QK);
     LoadTensorToGcDescriptor(&(m_in_defs.inputTensors[3]), V);
+    LoadTensorToGcDescriptor(&(m_in_defs.inputTensors[4]), dyn_kv_len);
 
     m_in_defs.outputTensorNr = 1;
     LoadTensorToGcDescriptor(&(m_in_defs.outputTensors[0]), Out);
@@ -195,6 +219,7 @@ int DecodeFusedSdpaTest<T>::runTest()
     vec.push_back(K.GetTensorDescriptor());
     vec.push_back(QK.GetTensorDescriptor());
     vec.push_back(V.GetTensorDescriptor());
+    vec.push_back(dyn_kv_len.GetTensorDescriptor());
     vec.push_back(Out.GetTensorDescriptor());
 
     // execute a simulation of the kernel using TPC simulator,

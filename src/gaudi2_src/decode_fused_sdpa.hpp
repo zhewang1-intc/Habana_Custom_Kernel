@@ -38,6 +38,11 @@ public:
     virtual tpc_lib_api::GlueCodeReturn GetKernelName(
         char kernelName[tpc_lib_api::MAX_NODE_NAME], Decode_Sdpa_mode mode);
 
+    struct DecodeFusedSdpaParam
+    {
+        float sqr_dk;
+    };
+
 private:
     Decode_Sdpa_mode sdpa_mode;
     DecodeFusedSdpaGaudi2(const DecodeFusedSdpaGaudi2 &other) = delete;

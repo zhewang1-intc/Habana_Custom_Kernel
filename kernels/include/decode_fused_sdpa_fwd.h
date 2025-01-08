@@ -22,7 +22,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************/
 #include "kernel_config.h"
-// #pragma tpc_printf(enable)
+#pragma tpc_printf(enable)
 
 #define broadcast_unroll 4 // should same as repeat_kv_num.
 #define NO_SLM_SOFTMAX
@@ -84,16 +84,15 @@ bfloat128 bf16_div(bfloat128 reg, float64 tmp)
   coords[2][dim] = v * broadcast_unroll + 2;  \
   coords[3][dim] = v * broadcast_unroll + 3;
 
-void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out)
+void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor Out, float sqrt_dk)
 {
-  const int5 K_head_start = get_index_space_offset();
-  const int5 K_head_end = get_index_space_size() + K_head_start;
+  const int5 batch_start = get_index_space_offset();
+  const int5 batch_end = get_index_space_size() + batch_start;
 
   aso_init();
 
   const int head_dim = get_dim_size(Q, 0);
-  const int q_seq_len = get_dim_size(Q, 1);
-  const int kv_seq_len = get_dim_size(K, 0);
+  // const int kv_seq_len = get_dim_size(K, 0);
   const int q_head_num = get_dim_size(Q, 2);
   const int kv_head_num = get_dim_size(K, 2);
   const int repeat_kv_num = q_head_num / kv_head_num;
@@ -103,8 +102,10 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out)
   int5 QK_coords[4];
   int5 V_coords = {0};
   int5 Out_coords[4];
+  int5 kv_seq_len_coords = {0};
 
-  VECTOR sqrt_dk = 2.f; // todo: make it as param.
+  VECTOR sqrt_dk_reg = sqrt_dk;
+  printf("sqrt_dk %f\n", sqrt_dk);
 
   VECTOR broadcast_reg[broadcast_unroll];
   VECTOR KV_reg;
@@ -118,178 +119,256 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor Out)
   set_coords_unify_dim(Out_coords, 1, 0);
   set_coords_unify_dim(Q_coords, 1, 0);
 
-  for (int cur_k_head = K_head_start[0]; cur_k_head < K_head_end[0]; cur_k_head++)
+  for (int cur_batch = batch_start[0]; cur_batch < batch_end[0]; cur_batch++)
   {
-    K_coords[2] = cur_k_head;
-    V_coords[2] = cur_k_head;
-    set_coords_unroll_dim(Q_coords, 2, cur_k_head);
-    set_coords_unroll_dim(QK_coords, 2, cur_k_head);
-    set_coords_unroll_dim(Out_coords, 2, cur_k_head);
-    // gemv
-    for (int i = 0; i < broadcast_unroll; i++)
-      QK_max[i] = 0.f;
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
+    set_coords_unify_dim(Q_coords, 3, cur_batch);
+    set_coords_unify_dim(QK_coords, 3, cur_batch);
+    set_coords_unify_dim(Out_coords, 3, cur_batch);
+    K_coords[3] = cur_batch;
+    V_coords[3] = cur_batch;
+    kv_seq_len_coords[0] = cur_batch;
+    __global__ int *cur_batch_kv_seq_len_ptr = gen_addr(kv_seq_len_coords, kv_seq_len_ts);
+    int kv_seq_len = s_i32_ld_g(cur_batch_kv_seq_len_ptr);
+    for (int cur_kv_head = 0; cur_kv_head < kv_head_num; cur_kv_head++)
     {
-      K_coords[0] = cur_kv_seq;
+      K_coords[2] = cur_kv_head;
+      V_coords[2] = cur_kv_head;
+      set_coords_unroll_dim(Q_coords, 2, cur_kv_head);
+      set_coords_unroll_dim(QK_coords, 2, cur_kv_head);
+      set_coords_unroll_dim(Out_coords, 2, cur_kv_head);
+#pragma unroll(broadcast_unroll)
       for (int i = 0; i < broadcast_unroll; i++)
       {
-        acc_reg[i] = 0.f;
+        QK_max[i] = 0.f;
       }
-      for (int broadcast_Q_dim = 0; broadcast_Q_dim < head_dim; broadcast_Q_dim++)
+      for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
       {
-        set_coords_unify_dim(Q_coords, 0, broadcast_Q_dim);
-        __global__ float *p_Q0 = gen_addr(Q_coords[0], Q);
-        __global__ float *p_Q1 = gen_addr(Q_coords[1], Q);
-        __global__ float *p_Q2 = gen_addr(Q_coords[2], Q);
-        __global__ float *p_Q3 = gen_addr(Q_coords[3], Q);
-        broadcast_reg[0] = v_ld_g_a(p_Q0);
-        broadcast_reg[1] = v_ld_g_a(p_Q1);
-        broadcast_reg[2] = v_ld_g_a(p_Q2);
-        broadcast_reg[3] = v_ld_g_a(p_Q3);
-        K_coords[1] = broadcast_Q_dim;
-        KV_reg = v_ld_tnsr_i(K_coords, K);
-        acc_reg[0] = v_mac_v_v(KV_reg, broadcast_reg[0], acc_reg[0]);
-        acc_reg[1] = v_mac_v_v(KV_reg, broadcast_reg[1], acc_reg[1]);
-        acc_reg[2] = v_mac_v_v(KV_reg, broadcast_reg[2], acc_reg[2]);
-        acc_reg[3] = v_mac_v_v(KV_reg, broadcast_reg[3], acc_reg[3]);
+        K_coords[0] = cur_kv_seq;
+#pragma unroll(broadcast_unroll)
+        for (int i = 0; i < broadcast_unroll; i++)
+        {
+          acc_reg[i] = 0.f;
+        }
+        for (int broadcast_Q_dim = 0; broadcast_Q_dim < head_dim; broadcast_Q_dim++)
+        {
+          set_coords_unify_dim(Q_coords, 0, broadcast_Q_dim);
+          __global__ float *p_Q0 = gen_addr(Q_coords[0], Q);
+          __global__ float *p_Q1 = gen_addr(Q_coords[1], Q);
+          __global__ float *p_Q2 = gen_addr(Q_coords[2], Q);
+          __global__ float *p_Q3 = gen_addr(Q_coords[3], Q);
+          broadcast_reg[0] = v_ld_g_a(p_Q0);
+          broadcast_reg[1] = v_ld_g_a(p_Q1);
+          broadcast_reg[2] = v_ld_g_a(p_Q2);
+          broadcast_reg[3] = v_ld_g_a(p_Q3);
+          K_coords[1] = broadcast_Q_dim;
+          KV_reg = v_ld_tnsr_i(K_coords, K);
+          acc_reg[0] = v_mac_v_v(KV_reg, broadcast_reg[0], acc_reg[0]);
+          acc_reg[1] = v_mac_v_v(KV_reg, broadcast_reg[1], acc_reg[1]);
+          acc_reg[2] = v_mac_v_v(KV_reg, broadcast_reg[2], acc_reg[2]);
+          acc_reg[3] = v_mac_v_v(KV_reg, broadcast_reg[3], acc_reg[3]);
+        }
+
+        acc_reg[0] = v_mul_v_v(acc_reg[0], sqrt_dk_reg);
+        acc_reg[1] = v_mul_v_v(acc_reg[1], sqrt_dk_reg);
+        acc_reg[2] = v_mul_v_v(acc_reg[2], sqrt_dk_reg);
+        acc_reg[3] = v_mul_v_v(acc_reg[3], sqrt_dk_reg);
+
+        QK_max[0] = v_max_v_v(acc_reg[0], QK_max[0]);
+        QK_max[1] = v_max_v_v(acc_reg[1], QK_max[1]);
+        QK_max[2] = v_max_v_v(acc_reg[2], QK_max[2]);
+        QK_max[3] = v_max_v_v(acc_reg[3], QK_max[3]);
+
+        set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
+        st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
+        st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
+        st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
+        st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
       }
-
-      QK_max[0] = v_max_v_v(acc_reg[0], QK_max[0]);
-      QK_max[1] = v_max_v_v(acc_reg[1], QK_max[1]);
-      QK_max[2] = v_max_v_v(acc_reg[2], QK_max[2]);
-      QK_max[3] = v_max_v_v(acc_reg[3], QK_max[3]);
-
-      set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
-      st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
-      st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
-      st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
-      st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
-    }
-
-    // softmax
-    QK_max[0] = v_reduce_max_v_v(QK_max[0]);
-    QK_max[1] = v_reduce_max_v_v(QK_max[1]);
-    QK_max[2] = v_reduce_max_v_v(QK_max[2]);
-    QK_max[3] = v_reduce_max_v_v(QK_max[3]);
+      QK_max[0] = v_reduce_max_v_v(QK_max[0]);
+      QK_max[1] = v_reduce_max_v_v(QK_max[1]);
+      QK_max[2] = v_reduce_max_v_v(QK_max[2]);
+      QK_max[3] = v_reduce_max_v_v(QK_max[3]);
 #ifdef FLOAT32
-    printf("QK_max %f\n", QK_max[0][0]);
-    printf("QK_max %f\n", QK_max[1][0]);
-    printf("QK_max %f\n", QK_max[2][0]);
-    printf("QK_max %f\n", QK_max[3][0]);
-#else
-    dump_max(QK_max[0]);
-    dump_max(QK_max[1]);
-    dump_max(QK_max[2]);
-    dump_max(QK_max[3]);
+      printf("QK_max %f\n", QK_max[0][0]);
+      printf("QK_max %f\n", QK_max[1][0]);
+      printf("QK_max %f\n", QK_max[2][0]);
+      printf("QK_max %f\n", QK_max[3][0]);
 #endif
-    QK_exp_sum[0] = 0.f;
-    QK_exp_sum[1] = 0.f;
-    QK_exp_sum[2] = 0.f;
-    QK_exp_sum[3] = 0.f;
-    aso_wait();
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
-    {
-      set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
-      acc_reg[0] = v_ld_tnsr_i(QK_coords[0], QK);
-      acc_reg[1] = v_ld_tnsr_i(QK_coords[1], QK);
-      acc_reg[2] = v_ld_tnsr_i(QK_coords[2], QK);
-      acc_reg[3] = v_ld_tnsr_i(QK_coords[3], QK);
-      acc_reg[0] = v_sub_v_v(acc_reg[0], QK_max[0]);
-      acc_reg[1] = v_sub_v_v(acc_reg[1], QK_max[1]);
-      acc_reg[2] = v_sub_v_v(acc_reg[2], QK_max[2]);
-      acc_reg[3] = v_sub_v_v(acc_reg[3], QK_max[3]);
-#ifdef FLOAT32
-      acc_reg[0] = v_exp_f32(acc_reg[0]);
-      acc_reg[1] = v_exp_f32(acc_reg[1]);
-      acc_reg[2] = v_exp_f32(acc_reg[2]);
-      acc_reg[3] = v_exp_f32(acc_reg[3]);
-#else
-      acc_reg[0] = bf16_exp(acc_reg[0]);
-      acc_reg[1] = bf16_exp(acc_reg[1]);
-      acc_reg[2] = bf16_exp(acc_reg[2]);
-      acc_reg[3] = bf16_exp(acc_reg[3]);
-#endif
-
-      set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
-      st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
-      st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
-      st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
-      st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
-
-      QK_exp_sum[0] = v_add_v_v(QK_exp_sum[0], acc_reg[0]);
-      QK_exp_sum[1] = v_add_v_v(QK_exp_sum[1], acc_reg[1]);
-      QK_exp_sum[2] = v_add_v_v(QK_exp_sum[2], acc_reg[2]);
-      QK_exp_sum[3] = v_add_v_v(QK_exp_sum[3], acc_reg[3]);
-    }
-    QK_exp_sum[0] = v_reduce_add_v_v(QK_exp_sum[0]);
-    QK_exp_sum[1] = v_reduce_add_v_v(QK_exp_sum[1]);
-    QK_exp_sum[2] = v_reduce_add_v_v(QK_exp_sum[2]);
-    QK_exp_sum[3] = v_reduce_add_v_v(QK_exp_sum[3]);
-#ifdef FLOAT32
-    QK_exp_sum[0] = v_div_f32(tmp, QK_exp_sum[0]);
-    QK_exp_sum[1] = v_div_f32(tmp, QK_exp_sum[1]);
-    QK_exp_sum[2] = v_div_f32(tmp, QK_exp_sum[2]);
-    QK_exp_sum[3] = v_div_f32(tmp, QK_exp_sum[3]);
-#else
-    QK_exp_sum[0] = bf16_div(QK_exp_sum[0], tmp);
-    QK_exp_sum[1] = bf16_div(QK_exp_sum[1], tmp);
-    QK_exp_sum[2] = bf16_div(QK_exp_sum[2], tmp);
-    QK_exp_sum[3] = bf16_div(QK_exp_sum[3], tmp);
-#endif
-    aso_wait();
-    for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
-    {
-      set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
-#ifdef NO_SLM_SOFTMAX
-      acc_reg[0] = v_ld_tnsr_i(QK_coords[0], QK);
-      acc_reg[1] = v_ld_tnsr_i(QK_coords[1], QK);
-      acc_reg[2] = v_ld_tnsr_i(QK_coords[2], QK);
-      acc_reg[3] = v_ld_tnsr_i(QK_coords[3], QK);
-#else
-      acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
-#endif
-      acc_reg[0] = v_mul_v_v(acc_reg[0], QK_exp_sum[0]);
-      acc_reg[1] = v_mul_v_v(acc_reg[1], QK_exp_sum[1]);
-      acc_reg[2] = v_mul_v_v(acc_reg[2], QK_exp_sum[2]);
-      acc_reg[3] = v_mul_v_v(acc_reg[3], QK_exp_sum[3]);
-      st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
-      st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
-      st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
-      st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
-    }
-    aso_wait();
-    // QK *V gemv
-    for (int cur_dim = 0; cur_dim < head_dim; cur_dim += VECTOR_SIZE)
-    {
-      V_coords[0] = cur_dim;
-      set_coords_unify_dim(Out_coords, 0, cur_dim);
-#pragma loop_taken
-      for (int i = 0; i < broadcast_unroll; i++)
-        acc_reg[i] = 0.f;
-      for (int broadcast_QK_dim = 0; broadcast_QK_dim < kv_seq_len; broadcast_QK_dim++)
-      {
-        set_coords_unify_dim(QK_coords, 0, broadcast_QK_dim);
-        __global__ float *p_QK0 = gen_addr(QK_coords[0], QK);
-        __global__ float *p_QK1 = gen_addr(QK_coords[1], QK);
-        __global__ float *p_QK2 = gen_addr(QK_coords[2], QK);
-        __global__ float *p_QK3 = gen_addr(QK_coords[3], QK);
-        broadcast_reg[0] = v_ld_g_a(p_QK0);
-        broadcast_reg[1] = v_ld_g_a(p_QK1);
-        broadcast_reg[2] = v_ld_g_a(p_QK2);
-        broadcast_reg[3] = v_ld_g_a(p_QK3);
-
-        V_coords[1] = broadcast_QK_dim;
-        KV_reg = v_ld_tnsr_i(V_coords, V);
-
-        acc_reg[0] = v_mac_v_v(KV_reg, broadcast_reg[0], acc_reg[0]);
-        acc_reg[1] = v_mac_v_v(KV_reg, broadcast_reg[1], acc_reg[1]);
-        acc_reg[2] = v_mac_v_v(KV_reg, broadcast_reg[2], acc_reg[2]);
-        acc_reg[3] = v_mac_v_v(KV_reg, broadcast_reg[3], acc_reg[3]);
-      }
-      st_tnsr_i_v(Out_coords[0], Out, acc_reg[0]);
-      st_tnsr_i_v(Out_coords[1], Out, acc_reg[1]);
-      st_tnsr_i_v(Out_coords[2], Out, acc_reg[2]);
-      st_tnsr_i_v(Out_coords[3], Out, acc_reg[3]);
     }
   }
+
+  //   for (int cur_k_head = _start[0]; cur_k_head < K_head_end[0]; cur_k_head++)
+  //   {
+  //     K_coords[2] = cur_k_head;
+  //     V_coords[2] = cur_k_head;
+  //     set_coords_unroll_dim(Q_coords, 2, cur_k_head);
+  //     set_coords_unroll_dim(QK_coords, 2, cur_k_head);
+  //     set_coords_unroll_dim(Out_coords, 2, cur_k_head);
+  //     // gemv
+  //     for (int i = 0; i < broadcast_unroll; i++)
+  //       QK_max[i] = 0.f;
+  //     for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
+  //     {
+  //       K_coords[0] = cur_kv_seq;
+  //       for (int i = 0; i < broadcast_unroll; i++)
+  //       {
+  //         acc_reg[i] = 0.f;
+  //       }
+  //       for (int broadcast_Q_dim = 0; broadcast_Q_dim < head_dim; broadcast_Q_dim++)
+  //       {
+  //         set_coords_unify_dim(Q_coords, 0, broadcast_Q_dim);
+  //         __global__ float *p_Q0 = gen_addr(Q_coords[0], Q);
+  //         __global__ float *p_Q1 = gen_addr(Q_coords[1], Q);
+  //         __global__ float *p_Q2 = gen_addr(Q_coords[2], Q);
+  //         __global__ float *p_Q3 = gen_addr(Q_coords[3], Q);
+  //         broadcast_reg[0] = v_ld_g_a(p_Q0);
+  //         broadcast_reg[1] = v_ld_g_a(p_Q1);
+  //         broadcast_reg[2] = v_ld_g_a(p_Q2);
+  //         broadcast_reg[3] = v_ld_g_a(p_Q3);
+  //         K_coords[1] = broadcast_Q_dim;
+  //         KV_reg = v_ld_tnsr_i(K_coords, K);
+  //         acc_reg[0] = v_mac_v_v(KV_reg, broadcast_reg[0], acc_reg[0]);
+  //         acc_reg[1] = v_mac_v_v(KV_reg, broadcast_reg[1], acc_reg[1]);
+  //         acc_reg[2] = v_mac_v_v(KV_reg, broadcast_reg[2], acc_reg[2]);
+  //         acc_reg[3] = v_mac_v_v(KV_reg, broadcast_reg[3], acc_reg[3]);
+  //       }
+
+  //       QK_max[0] = v_max_v_v(acc_reg[0], QK_max[0]);
+  //       QK_max[1] = v_max_v_v(acc_reg[1], QK_max[1]);
+  //       QK_max[2] = v_max_v_v(acc_reg[2], QK_max[2]);
+  //       QK_max[3] = v_max_v_v(acc_reg[3], QK_max[3]);
+
+  //       set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
+  //       st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
+  //       st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
+  //       st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
+  //       st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
+  //     }
+
+  //     // softmax
+  //     QK_max[0] = v_reduce_max_v_v(QK_max[0]);
+  //     QK_max[1] = v_reduce_max_v_v(QK_max[1]);
+  //     QK_max[2] = v_reduce_max_v_v(QK_max[2]);
+  //     QK_max[3] = v_reduce_max_v_v(QK_max[3]);
+  // #ifdef FLOAT32
+  //     printf("QK_max %f\n", QK_max[0][0]);
+  //     printf("QK_max %f\n", QK_max[1][0]);
+  //     printf("QK_max %f\n", QK_max[2][0]);
+  //     printf("QK_max %f\n", QK_max[3][0]);
+  // #else
+  //     dump_max(QK_max[0]);
+  //     dump_max(QK_max[1]);
+  //     dump_max(QK_max[2]);
+  //     dump_max(QK_max[3]);
+  // #endif
+  //     QK_exp_sum[0] = 0.f;
+  //     QK_exp_sum[1] = 0.f;
+  //     QK_exp_sum[2] = 0.f;
+  //     QK_exp_sum[3] = 0.f;
+  //     aso_wait();
+  //     for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
+  //     {
+  //       set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
+  //       acc_reg[0] = v_ld_tnsr_i(QK_coords[0], QK);
+  //       acc_reg[1] = v_ld_tnsr_i(QK_coords[1], QK);
+  //       acc_reg[2] = v_ld_tnsr_i(QK_coords[2], QK);
+  //       acc_reg[3] = v_ld_tnsr_i(QK_coords[3], QK);
+  //       acc_reg[0] = v_sub_v_v(acc_reg[0], QK_max[0]);
+  //       acc_reg[1] = v_sub_v_v(acc_reg[1], QK_max[1]);
+  //       acc_reg[2] = v_sub_v_v(acc_reg[2], QK_max[2]);
+  //       acc_reg[3] = v_sub_v_v(acc_reg[3], QK_max[3]);
+  // #ifdef FLOAT32
+  //       acc_reg[0] = v_exp_f32(acc_reg[0]);
+  //       acc_reg[1] = v_exp_f32(acc_reg[1]);
+  //       acc_reg[2] = v_exp_f32(acc_reg[2]);
+  //       acc_reg[3] = v_exp_f32(acc_reg[3]);
+  // #else
+  //       acc_reg[0] = bf16_exp(acc_reg[0]);
+  //       acc_reg[1] = bf16_exp(acc_reg[1]);
+  //       acc_reg[2] = bf16_exp(acc_reg[2]);
+  //       acc_reg[3] = bf16_exp(acc_reg[3]);
+  // #endif
+
+  //       set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
+  //       st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
+  //       st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
+  //       st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
+  //       st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
+
+  //       QK_exp_sum[0] = v_add_v_v(QK_exp_sum[0], acc_reg[0]);
+  //       QK_exp_sum[1] = v_add_v_v(QK_exp_sum[1], acc_reg[1]);
+  //       QK_exp_sum[2] = v_add_v_v(QK_exp_sum[2], acc_reg[2]);
+  //       QK_exp_sum[3] = v_add_v_v(QK_exp_sum[3], acc_reg[3]);
+  //     }
+  //     QK_exp_sum[0] = v_reduce_add_v_v(QK_exp_sum[0]);
+  //     QK_exp_sum[1] = v_reduce_add_v_v(QK_exp_sum[1]);
+  //     QK_exp_sum[2] = v_reduce_add_v_v(QK_exp_sum[2]);
+  //     QK_exp_sum[3] = v_reduce_add_v_v(QK_exp_sum[3]);
+  // #ifdef FLOAT32
+  //     QK_exp_sum[0] = v_div_f32(tmp, QK_exp_sum[0]);
+  //     QK_exp_sum[1] = v_div_f32(tmp, QK_exp_sum[1]);
+  //     QK_exp_sum[2] = v_div_f32(tmp, QK_exp_sum[2]);
+  //     QK_exp_sum[3] = v_div_f32(tmp, QK_exp_sum[3]);
+  // #else
+  //     QK_exp_sum[0] = bf16_div(QK_exp_sum[0], tmp);
+  //     QK_exp_sum[1] = bf16_div(QK_exp_sum[1], tmp);
+  //     QK_exp_sum[2] = bf16_div(QK_exp_sum[2], tmp);
+  //     QK_exp_sum[3] = bf16_div(QK_exp_sum[3], tmp);
+  // #endif
+  //     aso_wait();
+  //     for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
+  //     {
+  //       set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
+  // #ifdef NO_SLM_SOFTMAX
+  //       acc_reg[0] = v_ld_tnsr_i(QK_coords[0], QK);
+  //       acc_reg[1] = v_ld_tnsr_i(QK_coords[1], QK);
+  //       acc_reg[2] = v_ld_tnsr_i(QK_coords[2], QK);
+  //       acc_reg[3] = v_ld_tnsr_i(QK_coords[3], QK);
+  // #else
+  //       acc_reg[i] = slm_test[i + cur_kv_seq / (64 * process_64_kv_reg_num)];
+  // #endif
+  //       acc_reg[0] = v_mul_v_v(acc_reg[0], QK_exp_sum[0]);
+  //       acc_reg[1] = v_mul_v_v(acc_reg[1], QK_exp_sum[1]);
+  //       acc_reg[2] = v_mul_v_v(acc_reg[2], QK_exp_sum[2]);
+  //       acc_reg[3] = v_mul_v_v(acc_reg[3], QK_exp_sum[3]);
+  //       st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
+  //       st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
+  //       st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
+  //       st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
+  //     }
+  //     aso_wait();
+  //     // QK *V gemv
+  //     for (int cur_dim = 0; cur_dim < head_dim; cur_dim += VECTOR_SIZE)
+  //     {
+  //       V_coords[0] = cur_dim;
+  //       set_coords_unify_dim(Out_coords, 0, cur_dim);
+  // #pragma loop_taken
+  //       for (int i = 0; i < broadcast_unroll; i++)
+  //         acc_reg[i] = 0.f;
+  //       for (int broadcast_QK_dim = 0; broadcast_QK_dim < kv_seq_len; broadcast_QK_dim++)
+  //       {
+  //         set_coords_unify_dim(QK_coords, 0, broadcast_QK_dim);
+  //         __global__ float *p_QK0 = gen_addr(QK_coords[0], QK);
+  //         __global__ float *p_QK1 = gen_addr(QK_coords[1], QK);
+  //         __global__ float *p_QK2 = gen_addr(QK_coords[2], QK);
+  //         __global__ float *p_QK3 = gen_addr(QK_coords[3], QK);
+  //         broadcast_reg[0] = v_ld_g_a(p_QK0);
+  //         broadcast_reg[1] = v_ld_g_a(p_QK1);
+  //         broadcast_reg[2] = v_ld_g_a(p_QK2);
+  //         broadcast_reg[3] = v_ld_g_a(p_QK3);
+
+  //         V_coords[1] = broadcast_QK_dim;
+  //         KV_reg = v_ld_tnsr_i(V_coords, V);
+
+  //         acc_reg[0] = v_mac_v_v(KV_reg, broadcast_reg[0], acc_reg[0]);
+  //         acc_reg[1] = v_mac_v_v(KV_reg, broadcast_reg[1], acc_reg[1]);
+  //         acc_reg[2] = v_mac_v_v(KV_reg, broadcast_reg[2], acc_reg[2]);
+  //         acc_reg[3] = v_mac_v_v(KV_reg, broadcast_reg[3], acc_reg[3]);
+  //       }
+  //       st_tnsr_i_v(Out_coords[0], Out, acc_reg[0]);
+  //       st_tnsr_i_v(Out_coords[1], Out, acc_reg[1]);
+  //       st_tnsr_i_v(Out_coords[2], Out, acc_reg[2]);
+  //       st_tnsr_i_v(Out_coords[3], Out, acc_reg[3]);
+  //     }
+  //   }
 }

@@ -47,9 +47,11 @@ tpc_lib_api::GlueCodeReturn DecodeFusedSdpaGaudi2::GetGcDefinitions(
      *   Stage I - validate input
      **************************************************************************************/
     // validate correct amount of input tensors
-    if (in_defs->inputTensorNr != 4) // Q, K, QK_out, V
+    // Q shape: batch * Q_head * (1*)head_dim
+    // K shape: batch * KV_head * head_dim * kv_seq_len
+    if (in_defs->inputTensorNr != 5) // Q, K, QK_out, V, kv_len_tensor
     {
-        in_defs->inputTensorNr = 4;
+        in_defs->inputTensorNr = 5;
         return tpc_lib_api::GLUE_INCOMPATIBLE_INPUT_COUNT;
     }
     // validate correct amount of output tensors
@@ -83,10 +85,10 @@ tpc_lib_api::GlueCodeReturn DecodeFusedSdpaGaudi2::GetGcDefinitions(
     memcpy(outputSizes, in_defs->inputTensors[1].geometry.maxSizes, sizeof(outputSizes));
 
     // round up to elementsInVec and divide by elementsInVec.
-    unsigned depthIndex = (outputSizes[0] + (elementsInVec - 1)) / elementsInVec;
-    unsigned kv_head_num = outputSizes[2];
+    // unsigned depthIndex = (outputSizes[0] + (elementsInVec - 1)) / elementsInVec;
+    unsigned batch_num = outputSizes[3];
     out_defs->indexSpaceRank = 1;
-    out_defs->indexSpaceGeometry[0] = kv_head_num;
+    out_defs->indexSpaceGeometry[0] = batch_num;
     // reduce index space due to unroll.
     // out_defs->indexSpaceGeometry[1] = (outputSizes[1] + (c_unrollCount - 1)) / c_unrollCount;
     // out_defs->indexSpaceGeometry[2] = outputSizes[2];
@@ -99,35 +101,42 @@ tpc_lib_api::GlueCodeReturn DecodeFusedSdpaGaudi2::GetGcDefinitions(
 
     // // Index space mapping is calculated using f(i) = Ai + B
     // // 'i' is the index space member and A/B constants to be defined.
-    out_defs->inputTensorAccessPattern[0].mapping[0].indexSpaceDim = 0;
-    out_defs->inputTensorAccessPattern[0].mapping[0].a = 0;
-    out_defs->inputTensorAccessPattern[0].mapping[0].start_b = 0;
-    out_defs->inputTensorAccessPattern[0].mapping[0].end_b = depthIndex - 1;
+    // out_defs->inputTensorAccessPattern[0].mapping[0].indexSpaceDim = 0;
+    // out_defs->inputTensorAccessPattern[0].mapping[0].a = 0;
+    // out_defs->inputTensorAccessPattern[0].mapping[0].start_b = 0;
+    // out_defs->inputTensorAccessPattern[0].mapping[0].end_b = depthIndex - 1;
 
-    out_defs->inputTensorAccessPattern[0].mapping[1].indexSpaceDim = 1;
-    out_defs->inputTensorAccessPattern[0].mapping[1].a = 0;
-    out_defs->inputTensorAccessPattern[0].mapping[1].start_b = 0;
-    out_defs->inputTensorAccessPattern[0].mapping[1].end_b = outputSizes[1] - 1; // seq, should always be 1.
+    // out_defs->inputTensorAccessPattern[0].mapping[1].indexSpaceDim = 1;
+    // out_defs->inputTensorAccessPattern[0].mapping[1].a = 0;
+    // out_defs->inputTensorAccessPattern[0].mapping[1].start_b = 0;
+    // out_defs->inputTensorAccessPattern[0].mapping[1].end_b = outputSizes[1] - 1; // seq, should always be 1.
 
-    out_defs->inputTensorAccessPattern[0].mapping[2].indexSpaceDim = 2;
-    out_defs->inputTensorAccessPattern[0].mapping[2].a = 1;
-    out_defs->inputTensorAccessPattern[0].mapping[2].start_b = 0;
-    out_defs->inputTensorAccessPattern[0].mapping[2].end_b = 1 - 1;
+    // out_defs->inputTensorAccessPattern[0].mapping[2].indexSpaceDim = 2;
+    // out_defs->inputTensorAccessPattern[0].mapping[2].a = 1;
+    // out_defs->inputTensorAccessPattern[0].mapping[2].start_b = 0;
+    // out_defs->inputTensorAccessPattern[0].mapping[2].end_b = 1 - 1;
 
-    out_defs->outputTensorAccessPattern[0].mapping[0].indexSpaceDim = 0;
-    out_defs->outputTensorAccessPattern[0].mapping[0].a = 0;
-    out_defs->outputTensorAccessPattern[0].mapping[0].start_b = 0;
-    out_defs->outputTensorAccessPattern[0].mapping[0].end_b = depthIndex - 1;
+    // out_defs->outputTensorAccessPattern[0].mapping[0].indexSpaceDim = 0;
+    // out_defs->outputTensorAccessPattern[0].mapping[0].a = 0;
+    // out_defs->outputTensorAccessPattern[0].mapping[0].start_b = 0;
+    // out_defs->outputTensorAccessPattern[0].mapping[0].end_b = depthIndex - 1;
 
-    out_defs->outputTensorAccessPattern[0].mapping[1].indexSpaceDim = 1;
-    out_defs->outputTensorAccessPattern[0].mapping[1].a = 0;
-    out_defs->outputTensorAccessPattern[0].mapping[1].start_b = 0;
-    out_defs->outputTensorAccessPattern[0].mapping[1].end_b = outputSizes[1] - 1;
+    // out_defs->outputTensorAccessPattern[0].mapping[1].indexSpaceDim = 1;
+    // out_defs->outputTensorAccessPattern[0].mapping[1].a = 0;
+    // out_defs->outputTensorAccessPattern[0].mapping[1].start_b = 0;
+    // out_defs->outputTensorAccessPattern[0].mapping[1].end_b = outputSizes[1] - 1;
 
-    out_defs->outputTensorAccessPattern[0].mapping[2].indexSpaceDim = 2;
-    out_defs->outputTensorAccessPattern[0].mapping[2].a = 1;
-    out_defs->outputTensorAccessPattern[0].mapping[2].start_b = 0;
-    out_defs->outputTensorAccessPattern[0].mapping[2].end_b = 1 - 1;
+    // out_defs->outputTensorAccessPattern[0].mapping[2].indexSpaceDim = 2;
+    // out_defs->outputTensorAccessPattern[0].mapping[2].a = 1;
+    // out_defs->outputTensorAccessPattern[0].mapping[2].start_b = 0;
+    // out_defs->outputTensorAccessPattern[0].mapping[2].end_b = 1 - 1;
+
+    /*************************************************************************************
+     *    Stage IV -  define scalar parameters
+     **************************************************************************************/
+    DecodeFusedSdpaParam *p = static_cast<DecodeFusedSdpaParam *>(in_defs->nodeParams.nodeParams);
+    out_defs->kernel.paramsNr = sizeof(*p) / sizeof(float);
+    memcpy(&(out_defs->kernel.scalarParams[0]), p, sizeof(*p));
 
     /*************************************************************************************
      *    Stage V -  Load ISA into the descriptor.
