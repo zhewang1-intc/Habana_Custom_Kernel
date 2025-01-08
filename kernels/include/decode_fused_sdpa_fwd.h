@@ -24,7 +24,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "kernel_config.h"
 #pragma tpc_printf(enable)
 
-#define broadcast_unroll 4 // should same as repeat_kv_num.
+#define UNROLL_KV 2 // should same as repeat_kv_num.
+#define REPEAT_KV 4
+#define UNROLL_Q UNROLL_KV *REPEAT_KV
 #define NO_SLM_SOFTMAX
 
 #define PRINT_REG_VALUE(NAME, REG) \
@@ -72,18 +74,6 @@ bfloat128 bf16_div(bfloat128 reg, float64 tmp)
   return reg;
 }
 
-#define set_coords_unify_dim(coords, dim, v) \
-  coords[0][dim] = v;                        \
-  coords[1][dim] = v;                        \
-  coords[2][dim] = v;                        \
-  coords[3][dim] = v;
-
-#define set_coords_unroll_dim(coords, dim, v) \
-  coords[0][dim] = v * broadcast_unroll;      \
-  coords[1][dim] = v * broadcast_unroll + 1;  \
-  coords[2][dim] = v * broadcast_unroll + 2;  \
-  coords[3][dim] = v * broadcast_unroll + 3;
-
 void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor Out, float sqrt_dk)
 {
   const int5 batch_start = get_index_space_offset();
@@ -93,106 +83,112 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
 
   const int head_dim = get_dim_size(Q, 0);
   // const int kv_seq_len = get_dim_size(K, 0);
-  const int q_head_num = get_dim_size(Q, 2);
   const int kv_head_num = get_dim_size(K, 2);
-  const int repeat_kv_num = q_head_num / kv_head_num;
 
-  int5 Q_coords[4];
+  int5 Q_coords[UNROLL_Q];
   int5 K_coords = {0};
-  int5 QK_coords[4];
+  int5 QK_coords[UNROLL_Q];
   int5 V_coords = {0};
-  int5 Out_coords[4];
+  int5 Out_coords[UNROLL_Q];
   int5 kv_seq_len_coords = {0};
 
   VECTOR sqrt_dk_reg = sqrt_dk;
-  printf("sqrt_dk %f\n", sqrt_dk);
 
-  VECTOR broadcast_reg[broadcast_unroll];
-  VECTOR KV_reg;
-  VECTOR acc_reg[broadcast_unroll];
-  VECTOR QK_max[broadcast_unroll];
-  VECTOR QK_exp_sum[broadcast_unroll];
+  VECTOR broadcast_reg[UNROLL_Q];
+  VECTOR KV_regs[UNROLL_KV];
+  VECTOR acc_reg[UNROLL_Q];
+  VECTOR QK_max[UNROLL_Q];
+  VECTOR QK_exp_sum[UNROLL_Q];
   float64 tmp = 1.f;
   float128 tmp_128;
 
-  set_coords_unify_dim(QK_coords, 1, 0);
-  set_coords_unify_dim(Out_coords, 1, 0);
-  set_coords_unify_dim(Q_coords, 1, 0);
+#pragma unroll(UNROLL_Q)
+  for (int i = 0; i < UNROLL_Q; i++)
+  {
+    QK_coords[i][1] = 0;
+    Out_coords[i][1] = 0;
+    Q_coords[i][1] = 0;
+  }
 
   for (int cur_batch = batch_start[0]; cur_batch < batch_end[0]; cur_batch++)
   {
-    set_coords_unify_dim(Q_coords, 3, cur_batch);
-    set_coords_unify_dim(QK_coords, 3, cur_batch);
-    set_coords_unify_dim(Out_coords, 3, cur_batch);
+#pragma unroll(UNROLL_Q)
+    for (int i = 0; i < UNROLL_Q; i++)
+    {
+      QK_coords[i][3] = cur_batch;
+      Out_coords[i][3] = cur_batch;
+      Q_coords[i][3] = cur_batch;
+    }
     K_coords[3] = cur_batch;
     V_coords[3] = cur_batch;
     kv_seq_len_coords[0] = cur_batch;
     __global__ int *cur_batch_kv_seq_len_ptr = gen_addr(kv_seq_len_coords, kv_seq_len_ts);
     int kv_seq_len = s_i32_ld_g(cur_batch_kv_seq_len_ptr);
-    for (int cur_kv_head = 0; cur_kv_head < kv_head_num; cur_kv_head++)
+    for (int cur_kv_head = 0; cur_kv_head < kv_head_num; cur_kv_head += UNROLL_KV)
     {
-      K_coords[2] = cur_kv_head;
-      V_coords[2] = cur_kv_head;
-      set_coords_unroll_dim(Q_coords, 2, cur_kv_head);
-      set_coords_unroll_dim(QK_coords, 2, cur_kv_head);
-      set_coords_unroll_dim(Out_coords, 2, cur_kv_head);
-#pragma unroll(broadcast_unroll)
-      for (int i = 0; i < broadcast_unroll; i++)
+#pragma unroll(UNROLL_Q)
+      for (int i = 0; i < UNROLL_Q; i++)
       {
-        QK_max[i] = 0.f;
+        QK_coords[i][2] = cur_kv_head * REPEAT_KV + i;
+        Out_coords[i][2] = cur_kv_head * REPEAT_KV + i;
+        Q_coords[i][2] = cur_kv_head * REPEAT_KV + i;
       }
+#pragma unroll(UNROLL_Q)
+      for (int i = 0; i < UNROLL_Q; i++)
+        QK_max[i] = 0.f;
+      // TODO(zhe): pad kv_seq_len.
       for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
       {
         K_coords[0] = cur_kv_seq;
-#pragma unroll(broadcast_unroll)
-        for (int i = 0; i < broadcast_unroll; i++)
-        {
+#pragma unroll(UNROLL_Q)
+        for (int i = 0; i < UNROLL_Q; i++)
           acc_reg[i] = 0.f;
-        }
+
         for (int broadcast_Q_dim = 0; broadcast_Q_dim < head_dim; broadcast_Q_dim++)
         {
-          set_coords_unify_dim(Q_coords, 0, broadcast_Q_dim);
-          __global__ float *p_Q0 = gen_addr(Q_coords[0], Q);
-          __global__ float *p_Q1 = gen_addr(Q_coords[1], Q);
-          __global__ float *p_Q2 = gen_addr(Q_coords[2], Q);
-          __global__ float *p_Q3 = gen_addr(Q_coords[3], Q);
-          broadcast_reg[0] = v_ld_g_a(p_Q0);
-          broadcast_reg[1] = v_ld_g_a(p_Q1);
-          broadcast_reg[2] = v_ld_g_a(p_Q2);
-          broadcast_reg[3] = v_ld_g_a(p_Q3);
+#pragma unroll(UNROLL_Q)
+          for (int i = 0; i < UNROLL_Q; i++)
+            Q_coords[i][0] = broadcast_Q_dim;
+
+#pragma unroll(UNROLL_Q)
+          for (int i = 0; i < UNROLL_Q; i++)
+            broadcast_reg[i] = v_ld_g_a(gen_addr(Q_coords[i], Q));
           K_coords[1] = broadcast_Q_dim;
-          KV_reg = v_ld_tnsr_i(K_coords, K);
-          acc_reg[0] = v_mac_v_v(KV_reg, broadcast_reg[0], acc_reg[0]);
-          acc_reg[1] = v_mac_v_v(KV_reg, broadcast_reg[1], acc_reg[1]);
-          acc_reg[2] = v_mac_v_v(KV_reg, broadcast_reg[2], acc_reg[2]);
-          acc_reg[3] = v_mac_v_v(KV_reg, broadcast_reg[3], acc_reg[3]);
+#pragma unroll(UNROLL_KV)
+          for (int i = 0; i < UNROLL_KV; i++)
+          {
+            K_coords[2] = cur_kv_head + i;
+            KV_regs[i] = v_ld_tnsr_i(K_coords, K);
+          }
+#pragma unroll(UNROLL_Q)
+          for (int i = 0; i < UNROLL_Q; i++)
+            acc_reg[i] = v_mac_v_v(KV_regs[i / REPEAT_KV], broadcast_reg[i], acc_reg[i]);
         }
 
-        acc_reg[0] = v_mul_v_v(acc_reg[0], sqrt_dk_reg);
-        acc_reg[1] = v_mul_v_v(acc_reg[1], sqrt_dk_reg);
-        acc_reg[2] = v_mul_v_v(acc_reg[2], sqrt_dk_reg);
-        acc_reg[3] = v_mul_v_v(acc_reg[3], sqrt_dk_reg);
+#pragma unroll(UNROLL_Q)
+        for (int i = 0; i < UNROLL_Q; i++)
+          acc_reg[i] = v_mul_v_v(acc_reg[i], sqrt_dk_reg);
 
-        QK_max[0] = v_max_v_v(acc_reg[0], QK_max[0]);
-        QK_max[1] = v_max_v_v(acc_reg[1], QK_max[1]);
-        QK_max[2] = v_max_v_v(acc_reg[2], QK_max[2]);
-        QK_max[3] = v_max_v_v(acc_reg[3], QK_max[3]);
+#pragma unroll(UNROLL_Q)
+        for (int i = 0; i < UNROLL_Q; i++)
+          QK_max[i] = v_max_v_v(acc_reg[i], QK_max[i]);
 
-        set_coords_unify_dim(QK_coords, 0, cur_kv_seq);
-        st_tnsr_i_v(QK_coords[0], QK, acc_reg[0]);
-        st_tnsr_i_v(QK_coords[1], QK, acc_reg[1]);
-        st_tnsr_i_v(QK_coords[2], QK, acc_reg[2]);
-        st_tnsr_i_v(QK_coords[3], QK, acc_reg[3]);
+#pragma unroll(UNROLL_Q)
+        for (int i = 0; i < UNROLL_Q; i++)
+          QK_coords[i][0] = cur_kv_seq;
+
+#pragma unroll(UNROLL_Q)
+        for (int i = 0; i < UNROLL_Q; i++)
+          st_tnsr_i_v(QK_coords[i], QK, acc_reg[i]);
       }
-      QK_max[0] = v_reduce_max_v_v(QK_max[0]);
-      QK_max[1] = v_reduce_max_v_v(QK_max[1]);
-      QK_max[2] = v_reduce_max_v_v(QK_max[2]);
-      QK_max[3] = v_reduce_max_v_v(QK_max[3]);
+
+#pragma unroll(UNROLL_Q)
+      for (int i = 0; i < UNROLL_Q; i++)
+        QK_max[i] = v_reduce_max_v_v(QK_max[i]);
 #ifdef FLOAT32
-      printf("QK_max %f\n", QK_max[0][0]);
-      printf("QK_max %f\n", QK_max[1][0]);
-      printf("QK_max %f\n", QK_max[2][0]);
-      printf("QK_max %f\n", QK_max[3][0]);
+#pragma unroll(UNROLL_Q)
+      for (int i = 0; i < UNROLL_Q; i++)
+        printf("QK_max %f\n", QK_max[i][0]);
 #endif
     }
   }
@@ -205,12 +201,12 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
   //     set_coords_unroll_dim(QK_coords, 2, cur_k_head);
   //     set_coords_unroll_dim(Out_coords, 2, cur_k_head);
   //     // gemv
-  //     for (int i = 0; i < broadcast_unroll; i++)
+  //     for (int i = 0; i < UNROLL_Q; i++)
   //       QK_max[i] = 0.f;
   //     for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
   //     {
   //       K_coords[0] = cur_kv_seq;
-  //       for (int i = 0; i < broadcast_unroll; i++)
+  //       for (int i = 0; i < UNROLL_Q; i++)
   //       {
   //         acc_reg[i] = 0.f;
   //       }
@@ -343,7 +339,7 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
   //       V_coords[0] = cur_dim;
   //       set_coords_unify_dim(Out_coords, 0, cur_dim);
   // #pragma loop_taken
-  //       for (int i = 0; i < broadcast_unroll; i++)
+  //       for (int i = 0; i < UNROLL_Q; i++)
   //         acc_reg[i] = 0.f;
   //       for (int broadcast_QK_dim = 0; broadcast_QK_dim < kv_seq_len; broadcast_QK_dim++)
   //       {

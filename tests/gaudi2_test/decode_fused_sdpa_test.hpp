@@ -133,6 +133,7 @@ void DecodeFusedSdpaTest<T>::deocde_fused_sdpa_ref(
                     Out.SetElement(Out_coords, Out.ElementAt(Out_coords) + QK.ElementAt(QK_coords) * V.ElementAt(V_coords));
                 }
             }
+            QK_max = -999999.f;
         }
     }
 }
@@ -143,10 +144,10 @@ int DecodeFusedSdpaTest<T>::runTest()
     // Initalize input size
     const int batch = 2;
     const int n_contex = 192;
-    const int q_head = 4;
+    const int q_head = 32;
     const int q_seq = 1;
-    const int head_dim = 64;
-    const int kv_head = 1;
+    const int head_dim = 2;
+    const int kv_head = 8;
     float sqrt_dk = 1.2f;
     // Initalize inputs
     uint64_t q_init[] = {head_dim, 1, q_head, batch};
