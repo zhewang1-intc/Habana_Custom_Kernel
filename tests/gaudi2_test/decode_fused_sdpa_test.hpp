@@ -107,13 +107,12 @@ void DecodeFusedSdpaTest<T>::deocde_fused_sdpa_ref(
             for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
             {
                 QK_coords[0] = cur_kv_seq;
-                QK_max = QK_max > QK.ElementAt(QK_coords) * sqrt_dk ? QK_max : QK.ElementAt(QK_coords) * sqrt_dk;
+                QK_max = QK_max > QK.ElementAt(QK_coords) ? QK_max : QK.ElementAt(QK_coords);
             }
-            std::cout << "ref QK_max: " << float(QK_max) << std::endl;
             for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq++)
             {
                 QK_coords[0] = cur_kv_seq;
-                QK.SetElement(QK_coords, QK.ElementAt(QK_coords) - QK_max);
+                QK.SetElement(QK_coords, (QK.ElementAt(QK_coords) - QK_max) * sqrt_dk);
                 QK.SetElement(QK_coords, expf(float(QK.ElementAt(QK_coords))));
                 exp_sum = exp_sum + QK.ElementAt(QK_coords);
             }
@@ -142,11 +141,11 @@ int DecodeFusedSdpaTest<T>::runTest()
 {
 
     // Initalize input size
-    const int batch = 2;
+    const int batch = 4;
     const int n_contex = 192;
     const int q_head = 32;
     const int q_seq = 1;
-    const int head_dim = 2;
+    const int head_dim = 64;
     const int kv_head = 8;
     float sqrt_dk = 1.2f;
     // Initalize inputs
@@ -167,9 +166,9 @@ int DecodeFusedSdpaTest<T>::runTest()
     K.FillWithData(1);
     V.FillWithData(1);
     int dyn_kv_len_coords[] = {0};
-    dyn_kv_len.SetElement(dyn_kv_len_coords, 64);
+    dyn_kv_len.SetElement(dyn_kv_len_coords, 32);
     dyn_kv_len_coords[0] = 1;
-    dyn_kv_len.SetElement(dyn_kv_len_coords, 128);
+    dyn_kv_len.SetElement(dyn_kv_len_coords, 80);
     // execute reference implementation of the kernel.
     this->deocde_fused_sdpa_ref(Q, K, QK_ref, V, dyn_kv_len, Out_ref, sqrt_dk);
 

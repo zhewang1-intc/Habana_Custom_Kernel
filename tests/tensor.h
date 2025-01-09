@@ -214,10 +214,12 @@ public:
         {
             // m_pdata[i] = num;
             if(modulo==0){
-            m_pdata[i] = float(i%50);
+            // m_pdata[i] = float(i%50);
+            m_pdata[i] = float(i);
             }
             else{
-            m_pdata[i] = float(i%50*0.1);
+            // m_pdata[i] = float(i%50*0.1);
+            m_pdata[i] = float(i*0.1);
             }
             num += 1;
             if (num >= modulo)
