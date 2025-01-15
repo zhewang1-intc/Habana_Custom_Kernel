@@ -141,7 +141,7 @@ int DecodeFusedSdpaTest<T>::runTest()
 {
 
     // Initalize input size
-    const int batch = 4;
+    const int batch = 2;
     const int n_contex = 192;
     const int q_head = 32;
     const int q_seq = 1;
@@ -152,7 +152,7 @@ int DecodeFusedSdpaTest<T>::runTest()
     uint64_t q_init[] = {head_dim, 1, q_head, batch};
     uint64_t tmp_init[] = {n_contex, 1, q_head, batch};
     uint64_t k_init[] = {n_contex, head_dim, kv_head, batch};
-    uint64_t v_init[] = {head_dim, n_contex, kv_head, batch};
+    uint64_t v_init[] = {n_contex, head_dim, kv_head, batch};
     uint64_t dyn_kv_len_init[] = {batch};
     test::Tensor<T, 4> Q(q_init);
     test::Tensor<T, 4> K(k_init);

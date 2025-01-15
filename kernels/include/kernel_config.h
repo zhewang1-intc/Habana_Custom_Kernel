@@ -64,6 +64,7 @@ typedef float SCALAR;
 #define v_reduce_add_v_v(a) v_f32_reduce_add(a)
 #define v_max_v_v(a, b) v_f32_max_b(a, b)
 #define v_reduce_max_v_v(a) v_f32_reduce_max(a)
+#define v_st_tnsr_partial(a, b, c, d, e) v_f32_st_tnsr_partial(a, b, c, d, e)
 
 #endif
 
@@ -99,5 +100,6 @@ typedef bf16 SCALAR;
 #define v_sel_less_v_s_v_v_b(a, b, c, d, i, p, o) \
   v_bf16_sel_less_bf16_b(a, b, c, d, 0, i, p, o)
 #define st_tnsr_i_v(a, b, c) v_bf16_st_tnsr(a, b, c)
+#define v_st_tnsr_partial(a, b, c, d, e) v_bf16_st_tnsr_partial(a, b, c, d, e)
 
 #endif

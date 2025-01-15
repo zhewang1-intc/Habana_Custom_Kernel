@@ -22,12 +22,10 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************/
 #include "kernel_config.h"
-#pragma tpc_printf(enable)
 
 #define UNROLL_KV 1 // should same as repeat_kv_num.
 #define REPEAT_KV 4
 #define UNROLL_Q UNROLL_KV *REPEAT_KV
-#define NO_SLM_SOFTMAX
 
 #define PRINT_REG_VALUE(NAME, REG) \
   printf(NAME);                    \
@@ -95,6 +93,7 @@ VECTOR v_div(VECTOR reg, float64 tmp)
 }
 #endif
 
+__local__ VECTOR bk_reg[1024 * REPEAT_KV / VECTOR_SIZE];
 void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor Out, float sqrt_dk)
 {
   const int5 batch_start = get_index_space_offset();
@@ -120,7 +119,7 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
   int5 Out_coords[UNROLL_Q];
   int5 kv_seq_len_coords = {0};
 
-  VECTOR sqrt_dk_reg = sqrt_dk;
+  float64 sqrt_dk_reg = sqrt_dk;
   VECTOR minus_inf_reg = minusInf.f;
 
   VECTOR broadcast_reg[UNROLL_Q];
@@ -128,8 +127,8 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
   VECTOR acc_reg[UNROLL_Q];
   VECTOR QK_max[UNROLL_Q];
   VECTOR QK_exp_sum[UNROLL_Q];
+  // VECTOR bk_reg[1024 * REPEAT_KV / VECTOR_SIZE];
   float64 tmp = 1.f;
-  float128 tmp_128;
 
 #pragma unroll(UNROLL_Q)
   for (int i = 0; i < UNROLL_Q; i++)
@@ -153,6 +152,7 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
     kv_seq_len_coords[0] = cur_batch;
     __global__ int *cur_batch_kv_seq_len_ptr = gen_addr(kv_seq_len_coords, kv_seq_len_ts);
     int kv_seq_len = s_i32_ld_g(cur_batch_kv_seq_len_ptr);
+    int pad_kv_seq_len = (kv_seq_len + VECTOR_SIZE - 1) / VECTOR_SIZE;
     for (int cur_kv_head = 0; cur_kv_head < kv_head_num; cur_kv_head += UNROLL_KV)
     {
 #pragma unroll(UNROLL_Q)
@@ -194,7 +194,7 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
             acc_reg[i] = v_mac_v_v(KV_regs[i / REPEAT_KV], broadcast_reg[i], acc_reg[i]);
         }
 
-#pragma unorll(UNROLL_Q)
+#pragma unroll(UNROLL_Q)
         for (int i = 0; i < UNROLL_Q; i++)
           acc_reg[i] = v_mov_v_vb(minus_inf_reg, acc_reg[i], pred, 0);
 
@@ -202,13 +202,13 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
         for (int i = 0; i < UNROLL_Q; i++)
           QK_max[i] = v_max_v_v(acc_reg[i], QK_max[i]);
 
-#pragma unroll(UNROLL_Q)
-        for (int i = 0; i < UNROLL_Q; i++)
-          QK_coords[i][0] = cur_kv_seq;
+          // #pragma unroll(UNROLL_Q)
+          //         for (int i = 0; i < UNROLL_Q; i++) QK_coords[i][0] = cur_kv_seq;
 
 #pragma unroll(UNROLL_Q)
         for (int i = 0; i < UNROLL_Q; i++)
-          st_tnsr_i_v(QK_coords[i], QK, acc_reg[i]);
+          bk_reg[cur_kv_seq / VECTOR_SIZE + i * pad_kv_seq_len] = acc_reg[i];
+        //  st_tnsr_i_v(QK_coords[i], QK, acc_reg[i]);
       }
 
 #pragma unroll(UNROLL_Q)
@@ -219,24 +219,25 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
       for (int i = 0; i < UNROLL_Q; i++)
         QK_exp_sum[i] = 0.f;
 
-      aso_wait();
+      // aso_wait();
       for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
       {
+// #pragma unroll(UNROLL_Q)
+//         for (int i = 0; i < UNROLL_Q; i++) QK_coords[i][0] = cur_kv_seq;
 #pragma unroll(UNROLL_Q)
         for (int i = 0; i < UNROLL_Q; i++)
-          QK_coords[i][0] = cur_kv_seq;
-#pragma unroll(UNROLL_Q)
-        for (int i = 0; i < UNROLL_Q; i++)
-          acc_reg[i] = v_ld_tnsr_i(QK_coords[i], QK);
+          acc_reg[i] = bk_reg[cur_kv_seq / VECTOR_SIZE + i * pad_kv_seq_len];
+          //  acc_reg[i] = v_ld_tnsr_i(QK_coords[i], QK);
 #pragma unroll(UNROLL_Q)
         for (int i = 0; i < UNROLL_Q; i++)
           acc_reg[i] = v_sub_v_v(acc_reg[i], QK_max[i]);
 #pragma unroll(UNROLL_Q)
         for (int i = 0; i < UNROLL_Q; i++)
-          acc_reg[i] = mul_sqrt_dk_exp(acc_reg[i], sqrt_dk);
+          acc_reg[i] = mul_sqrt_dk_exp(acc_reg[i], sqrt_dk_reg);
 #pragma unroll(UNROLL_Q)
         for (int i = 0; i < UNROLL_Q; i++)
-          st_tnsr_i_v(QK_coords[i], QK, acc_reg[i]);
+          bk_reg[cur_kv_seq / VECTOR_SIZE + i * pad_kv_seq_len] = acc_reg[i];
+          // st_tnsr_i_v(QK_coords[i], QK, acc_reg[i]);
 #pragma unroll(UNROLL_Q)
         for (int i = 0; i < UNROLL_Q; i++)
           QK_exp_sum[i] = v_add_v_v(QK_exp_sum[i], acc_reg[i]);
@@ -249,7 +250,7 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
       for (int i = 0; i < UNROLL_Q; i++)
         QK_exp_sum[i] = v_div(QK_exp_sum[i], tmp);
 
-      aso_wait();
+      // aso_wait();
       for (int cur_kv_seq = 0; cur_kv_seq < kv_seq_len; cur_kv_seq += VECTOR_SIZE)
       {
 #pragma unroll(UNROLL_Q)
@@ -257,7 +258,8 @@ void main(tensor Q, tensor K, tensor QK, tensor V, tensor kv_seq_len_ts, tensor 
           QK_coords[i][0] = cur_kv_seq;
 #pragma unroll(UNROLL_Q)
         for (int i = 0; i < UNROLL_Q; i++)
-          acc_reg[i] = v_ld_tnsr_i(QK_coords[i], QK);
+          acc_reg[i] = bk_reg[cur_kv_seq / VECTOR_SIZE + i * pad_kv_seq_len];
+          //  acc_reg[i] = v_ld_tnsr_i(QK_coords[i], QK);
 #pragma unroll(UNROLL_Q)
         for (int i = 0; i < UNROLL_Q; i++)
           acc_reg[i] = v_mul_v_v(acc_reg[i], QK_exp_sum[i]);

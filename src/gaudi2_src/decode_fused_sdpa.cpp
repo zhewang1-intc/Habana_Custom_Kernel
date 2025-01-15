@@ -80,7 +80,6 @@ tpc_lib_api::GlueCodeReturn DecodeFusedSdpaGaudi2::GetGcDefinitions(
      *    Stage II -  Define index space geometry. In this example the index space matches
      *    the dimensions of the output tensor, up to dim 0.
      **************************************************************************************/
-    int elementsInVec = sdpa_mode == decode_fused_sdpa_bf16_fwd ? 128 : 64;
     uint64_t outputSizes[gcapi::MAX_TENSOR_DIM] = {0};
     memcpy(outputSizes, in_defs->inputTensors[1].geometry.maxSizes, sizeof(outputSizes));
 
