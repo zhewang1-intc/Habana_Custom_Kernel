@@ -38,6 +38,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVE
 #include "relu_all_gaudi2.hpp"
 #include "user_lut_gaudi2.hpp"
 #include "decode_fused_sdpa.hpp"
+#include "transpose.hpp"
 
 #include "entry_points.hpp"
 #include <stdio.h>
@@ -146,6 +147,10 @@ tpc_lib_api::GlueCodeReturn GetKernelGuids( _IN_    tpc_lib_api::DeviceId       
            DecodeFusedSdpaF32FwdInstance.GetKernelName(guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA_F32].name,DecodeFusedSdpaGaudi2::decode_fused_sdpa_f32_fwd);
            DecodeFusedSdpaGaudi2 DecodeFusedSdpaBf16FwdInstance(DecodeFusedSdpaGaudi2::decode_fused_sdpa_bf16_fwd);
            DecodeFusedSdpaBf16FwdInstance.GetKernelName(guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA_BF16].name,DecodeFusedSdpaGaudi2::decode_fused_sdpa_bf16_fwd);
+           TransposeGaudi2 TransposeF32Instance(TransposeGaudi2::transpose_f32);
+           TransposeF32Instance.GetKernelName(guids[GAUDI2_KERNEL_TRANSPOSE_F32].name, TransposeGaudi2::transpose_f32);
+           TransposeGaudi2 TransposeBf16Instance(TransposeGaudi2::transpose_bf16);
+           TransposeBf16Instance.GetKernelName(guids[GAUDI2_KERNEL_TRANSPOSE_BF16].name, TransposeGaudi2::transpose_bf16);
         }
 
         if (kernelCount != nullptr)
@@ -458,6 +463,20 @@ InstantiateTpcKernel(_IN_  tpc_lib_api::HabanaKernelParams* params,
     if (strcmp(params->guid.name, kernelName) == 0)
     {
         return DecodeFusedSdpaBf16FwdInstance.GetGcDefinitions(params,instance);
+    }
+
+    TransposeGaudi2 TransposeF32Instance(TransposeGaudi2::transpose_f32);
+    TransposeF32Instance.GetKernelName(kernelName, TransposeGaudi2::transpose_f32);
+    if (strcmp(params->guid.name, kernelName) == 0)
+    {
+        return TransposeF32Instance.GetGcDefinitions(params,instance);
+    }
+
+    TransposeGaudi2 TransposeBf16Instance(TransposeGaudi2::transpose_bf16);
+    TransposeBf16Instance.GetKernelName(kernelName, TransposeGaudi2::transpose_bf16);
+    if (strcmp(params->guid.name, kernelName) == 0)
+    {
+        return TransposeBf16Instance.GetGcDefinitions(params,instance);
     }
 
     return tpc_lib_api::GLUE_NODE_NOT_FOUND;

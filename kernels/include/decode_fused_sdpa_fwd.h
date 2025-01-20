@@ -22,6 +22,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************/
 #include "kernel_config.h"
+#pragma tpc_printf (enable)
 
 #define UNROLL_KV 1 // should same as repeat_kv_num.
 #define REPEAT_KV 4

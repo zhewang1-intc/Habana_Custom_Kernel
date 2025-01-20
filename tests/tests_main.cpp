@@ -36,6 +36,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVE
 #include "kl_div_all_test.hpp"
 #include "user_lut_gaudi2_test.hpp"
 #include "decode_fused_sdpa_test.hpp"
+#include "transpose_test.hpp"
 
 int check_arg(int argc, char** argv, const char* device, const char* test)
 {
@@ -64,7 +65,8 @@ int main(int argc, char** argv)
     // DecodeFusedSdpaTest<bfloat16> sdpa_test_bf16;
     // sdpa_test_bf16.SetUp();
     // sdpa_test_bf16.runTest();
-    DecodeFusedSdpaTest<float> sdpa_test_f32;
+    // DecodeFusedSdpaTest<float> sdpa_test_f32;
+    TransposeTest<float> sdpa_test_f32;
     sdpa_test_f32.SetUp();
     sdpa_test_f32.runTest();
     return 0;
