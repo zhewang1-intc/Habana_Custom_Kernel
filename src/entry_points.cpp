@@ -38,6 +38,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVE
 #include "relu_all_gaudi2.hpp"
 #include "user_lut_gaudi2.hpp"
 #include "decode_fused_sdpa.hpp"
+#include "merge_expert.hpp"
 
 #include "entry_points.hpp"
 #include <stdio.h>
@@ -146,6 +147,10 @@ tpc_lib_api::GlueCodeReturn GetKernelGuids( _IN_    tpc_lib_api::DeviceId       
            DecodeFusedSdpaF32FwdInstance.GetKernelName(guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA_F32].name,DecodeFusedSdpaGaudi2::decode_fused_sdpa_f32_fwd);
            DecodeFusedSdpaGaudi2 DecodeFusedSdpaBf16FwdInstance(DecodeFusedSdpaGaudi2::decode_fused_sdpa_bf16_fwd);
            DecodeFusedSdpaBf16FwdInstance.GetKernelName(guids[GAUDI2_KERNEL_DECODE_FUSED_SDPA_BF16].name,DecodeFusedSdpaGaudi2::decode_fused_sdpa_bf16_fwd);
+           MergeExpertGaudi2 MergeExpertF32Instance(MergeExpertGaudi2::merge_expert_f32);
+           MergeExpertF32Instance.GetKernelName(guids[GAUDI2_KERNEL_MERGE_EXPERT_F32].name, MergeExpertGaudi2::merge_expert_f32);
+           MergeExpertGaudi2 MergeExpertBf16Instance(MergeExpertGaudi2::merge_expert_bf16);
+           MergeExpertBf16Instance.GetKernelName(guids[GAUDI2_KERNEL_MERGE_EXPERT_BF16].name, MergeExpertGaudi2::merge_expert_bf16);
         }
 
         if (kernelCount != nullptr)
@@ -458,6 +463,20 @@ InstantiateTpcKernel(_IN_  tpc_lib_api::HabanaKernelParams* params,
     if (strcmp(params->guid.name, kernelName) == 0)
     {
         return DecodeFusedSdpaBf16FwdInstance.GetGcDefinitions(params,instance);
+    }
+
+    MergeExpertGaudi2 MergeExpertF32Instance(MergeExpertGaudi2::merge_expert_f32);
+    MergeExpertF32Instance.GetKernelName(kernelName, MergeExpertGaudi2::merge_expert_f32);
+    if (strcmp(params->guid.name, kernelName) == 0)
+    {
+        return MergeExpertF32Instance.GetGcDefinitions(params,instance);
+    }
+    
+    MergeExpertGaudi2 MergeExpertBf16Instance(MergeExpertGaudi2::merge_expert_bf16);
+    MergeExpertBf16Instance.GetKernelName(kernelName, MergeExpertGaudi2::merge_expert_bf16);
+    if (strcmp(params->guid.name, kernelName) == 0)
+    {
+        return MergeExpertBf16Instance.GetGcDefinitions(params,instance);
     }
 
     return tpc_lib_api::GLUE_NODE_NOT_FOUND;
