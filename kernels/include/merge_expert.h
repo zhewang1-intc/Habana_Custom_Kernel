@@ -44,12 +44,12 @@ void main(tensor input, tensor indices, tensor weight, tensor output) {
            cur_dim += VECTOR_SIZE * UNROLL_LOAD) {
 #pragma unroll(UNROLL_LOAD)
         for (int i = 0; i < UNROLL_LOAD; i++) {
-          input_coords[i] = cur_dim + i * VECTOR_SIZE;
-          output_coords[i] = cur_dim + i * VECTOR_SIZE;
-          in_reg[i] = v_ld_tnsr_i(input_coords, input);
-          out_reg[i] = v_ld_tnsr_i(output_coords, output);
+          input_coords[i][0] = cur_dim + i * VECTOR_SIZE;
+          output_coords[i][0] = cur_dim + i * VECTOR_SIZE;
+          in_reg[i] = v_ld_tnsr_i(input_coords[i], input);
+          out_reg[i] = v_ld_tnsr_i(output_coords[i], output);
           out_reg[i] = v_mac_v_v(in_reg[i], weight_reg, out_reg[i]);
-          st_tnsr_i_v(output_coords, output, out_reg[i]);
+          st_tnsr_i_v(output_coords[i], output, out_reg[i]);
         }
       }
     }
