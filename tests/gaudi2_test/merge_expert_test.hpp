@@ -75,7 +75,6 @@ void MergeExpertTest<T>::merge_expert_ref(test::Tensor<T, 3> &input,
                                           test::Tensor<T, 2> &weights,
                                           test::Tensor<T, 2> &output) {
   int token_num = input.Size(1);
-  int total_expert_num = input.Size(2);
   int dim = input.Size(0);
   int select_expert_num = indices.Size(1);
   int input_coords[3] = {0};
